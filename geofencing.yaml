@@ -102,11 +102,13 @@ blueprint:
           name: "⏱️ Kurzabwesenheit Timeout (min)"
           description: |
             Innerhalb des Radius bleibt Away aus, bis seit Verlassen von Home diese Zeit verstrichen ist.
+            Träges, gut gedämmtes Haus (z. B. Pellets): mehrere Stunden (480 = 8 h) und einen großen Radius wählen,
+            dann greift Abwesend nur bei langer Abwesenheit – kurze Wechsel kosten nur Brennerstarts.
           default: 20
           selector:
             number:
               min: 0
-              max: 180
+              max: 1440
               step: 1
               unit_of_measurement: "min"
 

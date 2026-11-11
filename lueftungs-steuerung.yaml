@@ -1,0 +1,2190 @@
+blueprint:
+  name: "(Common) Lüftungs-Steuerung"
+  description: |
+    🪟 **Modul: Lüftungs-Assistent**
+
+    Managt das Stoßlüften und schützt vor vergessenen Fenstern. Unabhängig von Heizung und Heizungshersteller.
+
+    **Kern-Funktionen:**
+    - 🌬️ Erinnerung zum Lüften (Zeit, CO2 oder Feuchte).
+    - ⏱️ Close-Timer: Erinnert ans Schließen nach X Minuten.
+    - 🚨 Eskalation: Nerviger Alarm, wenn Fenster offen bleiben.
+    - ⏰ Snooze: Eskalation per Push-Button um 1h pausieren.
+    - 🌧️ Sicherheits-Warnung bei Regen oder Verlassen des Hauses.
+    - ❄️ Sommer-Kühlung: Benachrichtigung wenn Lüften die Wohnung kühlen kann.
+    - ☀️ Sommermodus-aware: bei aktivem Sommermodus keine kritische Eskalation — nur normale Meldungen (Präsenz im Raum bleibt still). Kritisch wird es einzig bei einem über 24 h offenen Fenster (mit „Stumm bis geschlossen"-Button). Regen, Sturm und Away lösen im Sommer nur eine normale Warnung aus.
+    - 🌬️ Sturm-Erkennung (Wetter-Status windy/exceptional) als zusätzliche Sicherheits-Warnung neben Regen.
+    - 🔌 Mobile Klimaanlage: Abluftfenster werden direkt ausgewählt (kein Fehlalarm), mehrere offene Abluftfenster werden gemeldet. Optionale Klima-Automatik: bei freier Kühlung Push mit "Weiterlaufen lassen"-Button (sonst Auto-Off nach 10 min); bei Erreichen der Innen-Schwelle schaltet die Klima automatisch ab.
+    - ❄️ Kühl-Logik rein temperaturbasiert (kein Zeitfenster mehr): empfohlen wird, wenn außen kühler als innen; geschlossen wird, wenn außen wieder wärmer wird.
+
+    **Zusammenspiel:**
+    *   🌡️ Heizungssteuerung (z. B. Heating Core): erkennt offene Fenster selbst und senkt still ab – Fenster-Pushs kommen nur von hier.
+    *   📍 `(Common) Geofencing` (Abwesend-Helfer).
+
+    **Zuständigkeit:**
+    Dieses Modul ist der einzige Absender von Fenster-/Lüftungs-Benachrichtigungen und steuert als einziger Aktor die mobile Klimaanlage (Auto-Off).
+
+    **Version:** 1.0 | **Autor:** Fabian Brandl
+
+  domain: automation
+  author: "Fabian Brandl"
+
+  input:
+    section_global:
+      name: "🌍 Global: Wetter, Away & Notifications"
+      description: |
+        Zentrale Konfiguration für Wetter, Away-Status, Reminder und Benachrichtigungen.
+        Diese Werte gelten für alle Räume.
+      collapsed: false
+      input:
+        weather_entity:
+          name: "🌧️ Wetter-Entity"
+          description: |
+            Weather-Entity für Regenstatus und Regenprognose (z.B. weather.home).
+          selector:
+            entity:
+              domain: weather
+        people_home_entity:
+          name: "🏠 Anwesenheits-Zone"
+          description: |
+            Zone-Entity die anzeigt wie viele Personen daheim sind (z.B. zone.home).
+            Wenn der State '0' ist (niemand in der Zone) → KEINE Lüftungs-Notifications.
+          selector:
+            entity:
+              domain: zone
+        summer_mode_boolean:
+          name: "❄️ Sommermodus-Schalter (opt)"
+          description: |
+            Gemeinsamer Saison-Schalter (input_boolean), gesetzt von der
+            Heizungssteuerung. Wenn AN und jemand daheim: keine Heizverlust-
+            Schließ-Reminder/Eskalation (im Sommer gibt es keinen Heizverlust).
+            Regen-/Away-Sicherheitswarnungen bleiben unberührt.
+            Leer = keine Sommermodus-Berücksichtigung.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
+        guest_mode_boolean:
+          name: "🏡 Guest-Mode Helper (opt)"
+          description: |
+            Gleicher Gast-Schalter wie in der Heizungssteuerung.
+            Wenn aktiv, werden Away-basierte Unterdrückungen ignoriert.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
+
+        enable_daily_reminder:
+          name: "🔘 Tägliche Erinnerung aktiv"
+          description: |
+            Schalter: Erinnerung im Zeitfenster senden, wenn passend.
+            Bedingungen: im Zeitfenster + jemand daheim + Heizung nicht aktiv + kein Regen.
+          default: true
+          selector:
+            boolean:
+        reminder_time_start:
+          name: "🕐 Lüftungs-Zeitfenster: Start"
+          description: |
+            Beginn des Zeitfensters für die tägliche Erinnerung.
+            Beispiel: 14:00 Uhr.
+          default: "14:00:00"
+          selector:
+            time:
+        reminder_time_end:
+          name: "🕓 Lüftungs-Zeitfenster: Ende"
+          description: |
+            Ende des Zeitfensters. Erinnerung feuert nur dazwischen.
+            Beispiel: 16:00 Uhr.
+          default: "16:00:00"
+          selector:
+            time:
+        reminder_schedule:
+          name: "🗓️ Lüftungs-Zeitplan (opt, überschreibt Start/Ende)"
+          description: |
+            Optionaler Schedule-Helfer für komplexere Zeitfenster.
+            Wenn gesetzt → ÜBERSCHREIBT die manuellen Start/Ende-Zeiten.
+            State 'on' = Erinnerung erlaubt.
+          default: ""
+          selector:
+            entity:
+              domain: schedule
+        heating_climate_entities:
+          name: "🔥 Heizungs-Climate-Entities (opt)"
+          description: |
+            Optional: Climate-Entities zur Heizungs-Aktivitätsprüfung.
+            Wenn eine davon aktuell heizt (hvac_action: heating/preheating)
+            → KEINE Lüftungs-Erinnerung (Energie-Verschwendung vermeiden).
+            Mehrere möglich. Leer lassen = keine Heizungs-Prüfung.
+          default: []
+          selector:
+            entity:
+              domain: climate
+              multiple: true
+        co2_sensor:
+          name: "🫧 CO2 Sensor (opt)"
+          description: |
+            Optionaler CO2-Sensor für bedarfsbasierte Lüftungs-Reminder.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+        co2_threshold:
+          name: "🫧 CO2 Grenzwert (ppm)"
+          description: |
+            Reminder auslösen, wenn CO2 darüber liegt.
+          default: 1200
+          selector:
+            number:
+              min: 600
+              max: 4000
+              step: 50
+              unit_of_measurement: "ppm"
+        humidity_sensor:
+          name: "💧 Luftfeuchte Sensor (opt)"
+          description: |
+            Optionaler Feuchtesensor für bedarfsbasierte Lüftungs-Reminder.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class:
+                - humidity
+        humidity_threshold:
+          name: "💧 Feuchte Grenzwert (%)"
+          description: |
+            Reminder auslösen, wenn Luftfeuchte darüber liegt.
+          default: 60
+          selector:
+            number:
+              min: 40
+              max: 90
+              step: 1
+              unit_of_measurement: "%"
+
+        airing_duration:
+          name: "🪟 Lüftungsdauer (min)"
+          description: |
+            Wie lange Fenster für Stoßlüften offen bleiben sollen.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+        escalation_delay:
+          name: "⚠️ Eskalations-Delay (min)"
+          description: |
+            Wie lange nach dem "Bitte schließen" Reminder bis kritische Alerts starten.
+            Gesamtzeit bis kritisch = Lüftungsdauer + dieser Wert.
+          default: 20
+          selector:
+            number:
+              min: 1
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+
+        # ── Heizverlust-Schutz: Reminder/Eskalation unterdrücken bei warmem Wetter ──
+        # Reminder dient primär dem Heizverlust-Schutz im Winter. Bei warmen
+        # Bedingungen (innen ODER außen) ist Lüften meist absichtlich und die
+        # Heizung läuft sowieso nicht. Innen-Seite nutzt die Kühl-Innen-Schwelle
+        # (Sommer-Kühlung-Sektion), hier nur noch die Außen-Schwelle.
+        # Ausnahmen: Regen ODER Away-Mode → Reminder feuert trotzdem.
+        warm_suppress_outdoor_threshold:
+          name: "🌡️ Warm-Suppress: Außen-Schwelle (°C)"
+          description: |
+            Wenn Außentemperatur ≥ dieser Schwelle → keine "Fenster zu!"
+            Nachricht und keine Eskalation (außer bei Regen oder Away).
+            Quelle: Außensensor (falls konfiguriert) sonst Wetter-Entity.
+            Die Innen-Seite nutzt die "Innen-Schwelle" der Sommer-Kühlung.
+          default: 20
+          selector:
+            number:
+              min: 10
+              max: 30
+              step: 0.5
+              unit_of_measurement: "°C"
+
+    section_master:
+      name: "🏠 Master-Raum"
+      description: |
+        Fensterkontakt, Raum-Label und optionaler Präsenz-Sensor für den Master-Bereich.
+      collapsed: false
+      input:
+        master_window:
+          name: "🪟 Master Fensterkontakt"
+          description: |
+            Fensterkontakt des Master-Raums.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+        master_label:
+          name: "🏷️ Master Raum-Name"
+          description: |
+            Wird in Notifications angezeigt (z.B. "Wohnzimmer").
+            Leer lassen → friendly_name des Fenster-Sensors wird verwendet.
+          default: ""
+          selector:
+            text:
+        master_presence:
+          name: "🧍 Master Präsenz-Sensor (opt)"
+          description: |
+            Binary sensor oder input_boolean. Wenn 'on' (anwesend) →
+            KEINE Fenster-Notifications für diesen Raum.
+            Beim Verlassen ('on' → 'off') wird re-geprüft und ggf. Close-Reminder gesendet.
+            Leer lassen = Notifications immer senden.
+          default: ""
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+
+    section_room2:
+      name: "🛏️ Raum 2"
+      description: |
+        Fensterkontakt, Raum-Label und optionaler Präsenz-Sensor für Raum 2.
+      collapsed: true
+      input:
+        room2_window:
+          name: "🪟 Raum 2 Fensterkontakt"
+          description: |
+            Fensterkontakt von Raum 2.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+        room2_label:
+          name: "🏷️ Raum 2 Name"
+          description: |
+            Wird in Notifications angezeigt. Leer → friendly_name des Fensters.
+          default: ""
+          selector:
+            text:
+        room2_presence:
+          name: "🧍 Raum 2 Präsenz-Sensor (opt)"
+          description: |
+            Wenn 'on' → KEINE Fenster-Notifications für diesen Raum.
+            Re-Check bei Verlassen (Übergang 'on' → 'off').
+          default: ""
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+
+    section_room3:
+      name: "💻 Raum 3"
+      description: |
+        Fensterkontakt, Raum-Label und optionaler Präsenz-Sensor für Raum 3.
+      collapsed: true
+      input:
+        room3_window:
+          name: "🪟 Raum 3 Fensterkontakt"
+          description: |
+            Fensterkontakt von Raum 3.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+        room3_label:
+          name: "🏷️ Raum 3 Name"
+          description: |
+            Wird in Notifications angezeigt. Leer → friendly_name des Fensters.
+          default: ""
+          selector:
+            text:
+        room3_presence:
+          name: "🧍 Raum 3 Präsenz-Sensor (opt)"
+          description: |
+            Wenn 'on' → KEINE Fenster-Notifications für diesen Raum.
+            Re-Check bei Verlassen (Übergang 'on' → 'off').
+          default: ""
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+
+    section_room4:
+      name: "🛁 Raum 4"
+      description: |
+        Fensterkontakt, Raum-Label und optionaler Präsenz-Sensor für Raum 4.
+      collapsed: true
+      input:
+        room4_window:
+          name: "🪟 Raum 4 Fensterkontakt"
+          description: |
+            Fensterkontakt von Raum 4.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+        room4_label:
+          name: "🏷️ Raum 4 Name"
+          description: |
+            Wird in Notifications angezeigt. Leer → friendly_name des Fensters.
+          default: ""
+          selector:
+            text:
+        room4_presence:
+          name: "🧍 Raum 4 Präsenz-Sensor (opt)"
+          description: |
+            Wenn 'on' → KEINE Fenster-Notifications für diesen Raum.
+            Re-Check bei Verlassen (Übergang 'on' → 'off').
+          default: ""
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+
+    section_room5:
+      name: "🍳 Raum 5"
+      description: |
+        Fensterkontakt, Raum-Label und optionaler Präsenz-Sensor für Raum 5.
+      collapsed: true
+      input:
+        room5_window:
+          name: "🪟 Raum 5 Fensterkontakt"
+          description: |
+            Fensterkontakt von Raum 5.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+        room5_label:
+          name: "🏷️ Raum 5 Name"
+          description: |
+            Wird in Notifications angezeigt. Leer → friendly_name des Fensters.
+          default: ""
+          selector:
+            text:
+        room5_presence:
+          name: "🧍 Raum 5 Präsenz-Sensor (opt)"
+          description: |
+            Wenn 'on' → KEINE Fenster-Notifications für diesen Raum.
+            Re-Check bei Verlassen (Übergang 'on' → 'off').
+          default: ""
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+
+    section_cooling:
+      name: "❄️ Sommer-Kühlung"
+      description: |
+        Intelligente Kühlung durch Lüften im Sommer — rein temperaturbasiert,
+        kein Zeitfenster: Empfohlen wird, sobald außen kühler als innen ist;
+        geschlossen wird, wenn außen wieder wärmer wird.
+        Unterdrückt "Fenster schließen" Alerts, wenn Kühlung sinnvoll ist.
+      collapsed: true
+      input:
+        enable_cooling:
+          name: "🔘 Sommer-Kühlung aktivieren"
+          description: |
+            Master-Schalter für die Kühlungs-Logik.
+          default: false
+          selector:
+            boolean:
+        cooling_indoor_temp_sensor:
+          name: "🌡️ Innentemperatur-Sensor"
+          description: |
+            Sensor für die Innentemperatur (z.B. Wohnzimmer).
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        cooling_outdoor_temp_source:
+          name: "🌡️ Außentemperatur-Sensor (opt)"
+          description: |
+            Optionaler externer Temperatursensor.
+            Wenn leer, wird die Temperatur aus der Wetter-Entity verwendet.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        cooling_indoor_threshold:
+          name: "🌡️ Innen-Schwelle (°C)"
+          description: |
+            Ab dieser Innentemperatur werden Kühlungs-Notifications gesendet.
+            Dient außerdem als Innen-Schwelle für den Warm-Suppress
+            (Heizverlust-Schutz) und als Ziel für den Klima-Auto-Off:
+            Ist die Innentemperatur wieder unter der Schwelle, schaltet die
+            Klima-Automatik das Gerät ab.
+          default: 25
+          selector:
+            number:
+              min: 20
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+        cooling_hysteresis:
+          name: "🌡️ Kühl-Offset (°C)"
+          description: |
+            Erlaubter Außen-Überschuss für die Lüften-/Kühlempfehlung.
+            Empfohlen wird, wenn: außen ≤ innen + Offset.
+            +2 = empfehlen, auch wenn außen bis 2 °C WÄRMER als innen ist.
+            0 = nur, wenn außen ≤ innen (Default).
+            -2 = nur, wenn außen mind. 2 °C KÜHLER als innen.
+          default: 0
+          selector:
+            number:
+              min: -2
+              max: 2
+              step: 0.5
+              unit_of_measurement: "°C"
+        cooling_outdoor_warmer_alert:
+          name: "🌡️ Außen-wärmer-Alert"
+          description: |
+            AN (Default): Sobald außen wärmer als innen wird UND ein Fenster
+            noch offen ist (und außen über der Innen-Schwelle liegt), kommt
+            eine normale Push-Notification — das ersetzt die frühere fixe
+            Morgen-Erinnerung, rein temperaturbasiert. Bleibt das Fenster
+            60 Min weiter offen, folgt eine erneute normale Erinnerung
+            (bewusst KEIN Critical — morgens schläft eventuell noch jemand).
+            AUS: Kein Außen-wärmer-Alert.
+          default: true
+          selector:
+            boolean:
+
+    section_ac:
+      name: "❄️ Mobile Klimaanlage"
+      description: |
+        Mobiles Klimagerät (z. B. Dreo) braucht ein Fenster für die Abluft.
+        Wähle die möglichen Abluftfenster direkt aus: Solange die Klima läuft,
+        gelten diese Fenster als legitim offen (keine Fenster-Warnung). Sind
+        MEHRERE Abluftfenster offen, wurde wahrscheinlich eines vergessen →
+        Hinweis. Die optionale Klima-Automatik schaltet das Gerät ab, wenn
+        freie Kühlung möglich ist (mit Rückfrage-Push) oder die Innen-Schwelle
+        erreicht wurde.
+      collapsed: true
+      input:
+        ac_climate_entity:
+          name: "❄️ Klima-Entity (climate)"
+          description: |
+            Das mobile Klimagerät als climate-Entity. "läuft" = Status ≠ off.
+            Leer = Klima-Logik komplett deaktiviert.
+          default: ""
+          selector:
+            entity:
+              domain: climate
+        ac_exhaust_windows:
+          name: "🪟 Abluftfenster (mehrfach möglich)"
+          description: |
+            Fensterkontakte der Fenster, durch die der Abluftschlauch geführt
+            werden kann. Diese Fenster lösen bei laufender Klima KEINE
+            "Fenster zu!"-Meldungen aus.
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+              device_class: window
+              multiple: true
+        ac_enable_auto_off:
+          name: "🔌 Klima-Automatik (Auto-Off)"
+          description: |
+            AN: Zwei automatische Abschalt-Pfade (nur Aus, nie automatisch An):
+            1. Freie Kühlung — außen kühler als innen (± Kühl-Offset):
+               Push mit "Weiterlaufen lassen"-Button; ohne Antwort wird die
+               Klima nach 10 Minuten ausgeschaltet.
+            2. Ziel erreicht — Innentemperatur ≤ Innen-Schwelle (10 min stabil):
+               Klima wird direkt ausgeschaltet, mit Info-Push.
+            AUS: nur Benachrichtigung bei freier Kühlung, kein Steuerbefehl.
+          default: false
+          selector:
+            boolean:
+
+    section_notifications:
+      name: "📩 Benachrichtigungen"
+      description: |
+        Geräte für Push-Notifications (Normal & Kritisch).
+      collapsed: false
+      input:
+        quiet_schedule:
+          name: "🌙 Ruhezeit-Zeitplan"
+          description: |
+            Optionaler Zeitplan (schedule-Helfer) für Ruhezeiten.
+            Wenn aktiv (on), werden alle Benachrichtigungen unterdrückt.
+            Leer lassen = keine Ruhezeit-Blockierung.
+          default: ""
+          selector:
+            entity:
+              domain: schedule
+        notify_on_presence:
+          name: "🔔 Auch bei Anwesenheit benachrichtigen"
+          description: |
+            AUS (Default): Räume mit konfiguriertem Präsenz-Sensor (on)
+            bekommen KEINE Fenster-Notification — Präsenz unterdrückt.
+            AN: Präsenz wird ignoriert, Push wird immer gesendet.
+            Räume ohne Präsenz-Sensor werden immer benachrichtigt.
+          default: false
+          selector:
+            boolean:
+        notify_device:
+          name: "📩 Notify Gerät (Normal)"
+          description: |
+            Mobile-App Gerät(e) für Standard-Reminder.
+          default: []
+          selector:
+            device:
+              filter:
+                integration: mobile_app
+              multiple: true
+        critical_notify_device:
+          name: "🚨 Notify Gerät (Critical)"
+          description: |
+            Mobile-App Gerät(e) für kritische Alarm-Meldungen.
+          default: []
+          selector:
+            device:
+              filter:
+                integration: mobile_app
+              multiple: true
+        notify_only_when_home:
+          name: "🏠 Nur an anwesende Personen senden"
+          description: |
+            AN (Default): Notifications gehen nur an Geräte, deren zugehöriger
+            device_tracker den State 'home' hat. Geräte abwesender Personen
+            werden übersprungen.
+            AUS: Notifications gehen an ALLE konfigurierten Geräte.
+
+            Voraussetzung: device_tracker.<name> folgt der gleichen Naming-
+            Konvention wie notify.mobile_app_<name> (HA-Default für die
+            mobile_app Integration). Wenn kein Tracker existiert, wird das
+            Gerät trotzdem benachrichtigt (Safety-Fallback).
+          default: true
+          selector:
+            boolean:
+
+mode: parallel
+max: 10
+
+trigger_variables:
+  tv_co2_sensor: !input co2_sensor
+  tv_co2_threshold: !input co2_threshold
+  tv_humidity_sensor: !input humidity_sensor
+  tv_humidity_threshold: !input humidity_threshold
+  tv_cooling_indoor_temp_sensor: !input cooling_indoor_temp_sensor
+  tv_cooling_outdoor_temp_source: !input cooling_outdoor_temp_source
+  tv_weather_entity: !input weather_entity
+  tv_enable_cooling: !input enable_cooling
+  tv_cooling_indoor_threshold: !input cooling_indoor_threshold
+  tv_cooling_hysteresis: !input cooling_hysteresis
+  tv_master_window: !input master_window
+  tv_room2_window: !input room2_window
+  tv_room3_window: !input room3_window
+  tv_room4_window: !input room4_window
+  tv_room5_window: !input room5_window
+  tv_people_home_entity: !input people_home_entity
+  tv_ac_climate_entity: !input ac_climate_entity
+
+trigger:
+  # Need Fresh Air: Zeitfenster startet
+  - trigger: time
+    at: !input reminder_time_start
+    id: need_fresh_air_window_open
+
+  # Need Fresh Air: Person kommt heim (Zone von 0 → ≥1)
+  # for: 30s als Debounce gegen HA-Startup wenn zone state aus unavailable→1 restored
+  - trigger: template
+    value_template: >
+      {% set ph = tv_people_home_entity | default('') | string | trim %}
+      {% if ph not in ['', 'none', 'None'] and states[ph] is defined %}
+        {% set s = states(ph) %}
+        {{ s not in ['0', 'unavailable', 'unknown'] }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:00:30"
+    id: need_fresh_air_arrived
+
+  - trigger: template
+    value_template: >
+      {{ tv_co2_sensor != '' and has_value(tv_co2_sensor) and (states(tv_co2_sensor) | float(0)) > (tv_co2_threshold | float(1200)) }}
+    for: "00:05:00"
+    id: need_fresh_air_co2
+
+  - trigger: template
+    value_template: >
+      {{ tv_humidity_sensor != '' and has_value(tv_humidity_sensor) and (states(tv_humidity_sensor) | float(0)) > (tv_humidity_threshold | float(60)) }}
+    for: "00:05:00"
+    id: need_fresh_air_humidity
+
+  # Window opened (per room)
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input master_window
+    id: master_window_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room2_window
+    id: room2_window_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room3_window
+    id: room3_window_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room4_window
+    id: room4_window_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room5_window
+    id: room5_window_change
+
+  # Presence changes (per room) — trigger re-check when user leaves a room with open window
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input master_presence
+    id: master_presence_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room2_presence
+    id: room2_presence_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room3_presence
+    id: room3_presence_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room4_presence
+    id: room4_presence_change
+
+  - trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input room5_presence
+    id: room5_presence_change
+
+  # Safety: Starkregen/Gewitter erkannt. Leichter "rainy" bewusst ausgenommen -> lüften ok.
+  - trigger: state
+    entity_id: !input weather_entity
+    to:
+      - "pouring"
+      - "lightning-rainy"
+      - "lightning"
+      - "hail"
+      - "snowy-rainy"
+    id: safety_rain
+
+  # Safety: Niemand daheim (zone="0", person="not_home", group="not_home"/"off",
+  # binary_sensor="off" — Template-Trigger deckt alle Selector-Typen ab)
+  # for: 30s Debounce gegen HA-Startup state-restore Spam
+  - trigger: template
+    value_template: >
+      {% set ph = tv_people_home_entity | default('') | string | trim %}
+      {% if ph not in ['', 'none', 'None'] and states[ph] is defined %}
+        {{ states(ph) in ['not_home', 'off', '0'] }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:00:30"
+    id: safety_away_mode
+
+  # Safety: Sturm/Wind erkannt (Wetter-Status). Wie Regen eine Sicherheits-Warnung.
+  - trigger: state
+    entity_id: !input weather_entity
+    to:
+      - "windy"
+      - "windy-variant"
+      - "exceptional"
+    id: safety_storm
+
+  # Cooling: Lüften lohnt sich JETZT (Innen warm, Außen kühler, alle Fenster zu)
+  # State-Transition-Trigger statt Polling → kein Spam
+  - trigger: template
+    value_template: >
+      {% set indoor_s = tv_cooling_indoor_temp_sensor | default('') | string | trim %}
+      {% set outdoor_s = tv_cooling_outdoor_temp_source | default('') | string | trim %}
+      {% if (tv_enable_cooling | default(false) | bool(false)) and indoor_s not in ['', 'none'] and has_value(indoor_s) %}
+        {% set indoor = states(indoor_s) | float(0) %}
+        {% set outdoor = 0 %}
+        {% if outdoor_s not in ['', 'none'] and has_value(outdoor_s) %}
+          {% set outdoor = states(outdoor_s) | float(0) %}
+        {% elif tv_weather_entity | default('') | string | trim != '' %}
+          {% set outdoor = state_attr(tv_weather_entity, 'temperature') | float(0) %}
+        {% endif %}
+        {% set ns = namespace(any_open=false) %}
+        {% for w in [tv_master_window, tv_room2_window, tv_room3_window, tv_room4_window, tv_room5_window] %}
+          {% if w not in ['', 'none', 'None'] and states[w] is defined and is_state(w, 'on') %}
+            {% set ns.any_open = true %}
+          {% endif %}
+        {% endfor %}
+        {{ indoor >= (tv_cooling_indoor_threshold | float(25))
+           and outdoor <= (indoor + (tv_cooling_hysteresis | float(0)))
+           and not ns.any_open }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:05:00"
+    id: cooling_open_recommended
+
+  # Cooling: Außen-Temp ≥ Innen-Temp + Sommer-Filter (außen über Schwelle)
+  # → "Außen wärmer geworden, Fenster zu sonst geht Cooling-Vorsprung verloren"
+  # Sommer-Filter via OUTDOOR-Threshold (nicht indoor) damit der Alert auch
+  # feuert, wenn das nächtliche Cooling super gelaufen ist und innen z.B.
+  # nur noch 21 °C hat — sonst würde der Heat-In bei warmem Wetter unbemerkt.
+  # +1.0 °C Totband über der Empfehlungs-Linie (innen + Offset): dazwischen
+  # weder "lüften!" noch "zu warm!" — verhindert widersprüchliche Meldungen
+  # bei fast gleichen Temperaturen.
+  - trigger: template
+    value_template: >
+      {% set indoor_s = tv_cooling_indoor_temp_sensor | default('') | string | trim %}
+      {% set outdoor_s = tv_cooling_outdoor_temp_source | default('') | string | trim %}
+      {% if (tv_enable_cooling | default(false) | bool(false)) and indoor_s not in ['', 'none'] and has_value(indoor_s) %}
+        {% set indoor = states(indoor_s) | float(0) %}
+        {% set outdoor = 0 %}
+        {% if outdoor_s not in ['', 'none'] and has_value(outdoor_s) %}
+          {% set outdoor = states(outdoor_s) | float(0) %}
+        {% elif tv_weather_entity | default('') | string | trim != '' %}
+          {% set outdoor = state_attr(tv_weather_entity, 'temperature') | float(0) %}
+        {% endif %}
+        {% set ns = namespace(any_open=false) %}
+        {% for w in [tv_master_window, tv_room2_window, tv_room3_window, tv_room4_window, tv_room5_window] %}
+          {% if w not in ['', 'none', 'None'] and states[w] is defined and is_state(w, 'on') %}
+            {% set ns.any_open = true %}
+          {% endif %}
+        {% endfor %}
+        {{ outdoor >= (tv_cooling_indoor_threshold | float(25))
+           and outdoor > (indoor + (tv_cooling_hysteresis | float(0)) + 1.0)
+           and ns.any_open }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:05:00"
+    id: cooling_outdoor_warmer
+
+  # Cooling: Stündlicher Re-Check während Cooling-Phase
+  # Wenn User die Öffnen-Notification ignoriert (Fenster bleibt zu), kommt
+  # jede volle Stunde Re-Notification — bis Fenster offen oder Bedingung weg.
+  - trigger: time_pattern
+    minutes: 0
+    id: cooling_hourly_recheck
+
+  # Klima: Außen kühler als innen (Hysterese) -> freie Kühlung statt Klima.
+  # Feuert unabhängig vom Fensterstatus (bei laufender Klima ist ein Fenster offen).
+  - trigger: template
+    value_template: >
+      {% set e = tv_ac_climate_entity | default('') | string | trim %}
+      {% set indoor_s = tv_cooling_indoor_temp_sensor | default('') | string | trim %}
+      {% set outdoor_s = tv_cooling_outdoor_temp_source | default('') | string | trim %}
+      {% if (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none'])
+            and indoor_s not in ['', 'none'] and has_value(indoor_s) %}
+        {% set indoor = states(indoor_s) | float(0) %}
+        {% set outdoor = 0 %}
+        {% if outdoor_s not in ['', 'none'] and has_value(outdoor_s) %}
+          {% set outdoor = states(outdoor_s) | float(0) %}
+        {% elif tv_weather_entity | default('') | string | trim != '' %}
+          {% set outdoor = state_attr(tv_weather_entity, 'temperature') | float(0) %}
+        {% endif %}
+        {{ outdoor <= (indoor + (tv_cooling_hysteresis | float(0))) }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:05:00"
+    id: ac_free_cooling
+
+  # Klima: Innen-Schwelle erreicht (10 min stabil) -> Ziel erfüllt, Klima kann aus.
+  - trigger: template
+    value_template: >
+      {% set e = tv_ac_climate_entity | default('') | string | trim %}
+      {% set indoor_s = tv_cooling_indoor_temp_sensor | default('') | string | trim %}
+      {% if (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none'])
+            and indoor_s not in ['', 'none'] and has_value(indoor_s) %}
+        {{ (states(indoor_s) | float(99)) <= (tv_cooling_indoor_threshold | float(25)) }}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    for: "00:10:00"
+    id: ac_target_reached
+
+action:
+  - variables:
+      inputs:
+        weather_entity: !input weather_entity
+        people_home_entity: !input people_home_entity
+        summer_mode_boolean: !input summer_mode_boolean
+        guest_mode_boolean: !input guest_mode_boolean
+        enable_daily_reminder: !input enable_daily_reminder
+        reminder_time_start: !input reminder_time_start
+        reminder_time_end: !input reminder_time_end
+        reminder_schedule: !input reminder_schedule
+        heating_climate_entities: !input heating_climate_entities
+        co2_sensor: !input co2_sensor
+        co2_threshold: !input co2_threshold
+        humidity_sensor: !input humidity_sensor
+        humidity_threshold: !input humidity_threshold
+        airing_duration: !input airing_duration
+        escalation_delay: !input escalation_delay
+        notify_device: !input notify_device
+        critical_notify_device: !input critical_notify_device
+        quiet_schedule: !input quiet_schedule
+        notify_on_presence: !input notify_on_presence
+        master_window: !input master_window
+        master_label: !input master_label
+        master_presence: !input master_presence
+        room2_window: !input room2_window
+        room2_label: !input room2_label
+        room2_presence: !input room2_presence
+        room3_window: !input room3_window
+        room3_label: !input room3_label
+        room3_presence: !input room3_presence
+        room4_window: !input room4_window
+        room4_label: !input room4_label
+        room4_presence: !input room4_presence
+        room5_window: !input room5_window
+        room5_label: !input room5_label
+        room5_presence: !input room5_presence
+        enable_cooling: !input enable_cooling
+        cooling_indoor_temp_sensor: !input cooling_indoor_temp_sensor
+        cooling_outdoor_temp_source: !input cooling_outdoor_temp_source
+        cooling_indoor_threshold: !input cooling_indoor_threshold
+        cooling_hysteresis: !input cooling_hysteresis
+        cooling_outdoor_warmer_alert: !input cooling_outdoor_warmer_alert
+        notify_only_when_home: !input notify_only_when_home
+        warm_suppress_outdoor_threshold: !input warm_suppress_outdoor_threshold
+        ac_climate_entity: !input ac_climate_entity
+        ac_exhaust_windows: !input ac_exhaust_windows
+        ac_enable_auto_off: !input ac_enable_auto_off
+
+      window_entities: >
+        {% set ns = namespace(items=[]) %}
+        {% for w in [inputs.master_window, inputs.room2_window, inputs.room3_window, inputs.room4_window, inputs.room5_window] %}
+          {% if w is string and (w | trim) != '' %}
+            {% set ns.items = ns.items + [w] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      # Per-Raum-Runtime-Config (nur Räume mit konfiguriertem Fenster)
+      rooms_runtime: >
+        {% set rooms = [
+          {'key':'master', 'label': (inputs.master_label | default('') | string), 'window': (inputs.master_window | default('') | string), 'presence': (inputs.master_presence | default('') | string)},
+          {'key':'room2',  'label': (inputs.room2_label  | default('') | string), 'window': (inputs.room2_window  | default('') | string), 'presence': (inputs.room2_presence  | default('') | string)},
+          {'key':'room3',  'label': (inputs.room3_label  | default('') | string), 'window': (inputs.room3_window  | default('') | string), 'presence': (inputs.room3_presence  | default('') | string)},
+          {'key':'room4',  'label': (inputs.room4_label  | default('') | string), 'window': (inputs.room4_window  | default('') | string), 'presence': (inputs.room4_presence  | default('') | string)},
+          {'key':'room5',  'label': (inputs.room5_label  | default('') | string), 'window': (inputs.room5_window  | default('') | string), 'presence': (inputs.room5_presence  | default('') | string)}
+        ] %}
+        {% set ns = namespace(items=[]) %}
+        {% for r in rooms %}
+          {% if (r.window | trim) != '' %}
+            {% set ns.items = ns.items + [r] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      # ── Mobile Klimaanlage ──
+      ac_running: >
+        {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+        {{ (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) }}
+      # Abluftfenster: direkt konfigurierte Fensterkontakte.
+      ac_window_entities: >
+        {% set raw = inputs.ac_exhaust_windows | default([]) %}
+        {% set lst = raw if (raw is iterable and raw is not string) else ([raw] if raw not in ['', none] else []) %}
+        {{ lst | reject('in', ['', 'none', 'None']) | list }}
+      # Räume/Fenster für Heizverlust-Nags: Abluftfenster sind ausgenommen,
+      # solange die Klima läuft (das offene Fenster ist die Abluft).
+      nag_rooms: >
+        {% set ns = namespace(items=[]) %}
+        {% for r in rooms_runtime %}
+          {% if not ((ac_running | bool(false)) and (r.window in ac_window_entities)) %}
+            {% set ns.items = ns.items + [r] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+      presence_trigger_ids:
+        - master_presence_change
+        - room2_presence_change
+        - room3_presence_change
+        - room4_presence_change
+        - room5_presence_change
+
+      rain_states:
+        # Schweres Niederschlags-/Gewitter-Wetter. Leichter "rainy" ist bewusst
+        # NICHT dabei -> bei leichtem Regen darf gelüftet werden.
+        - pouring
+        - lightning-rainy
+        - lightning
+        - hail
+        - snowy-rainy
+      storm_states:
+        - windy
+        - windy-variant
+        - exceptional
+
+      window_trigger_ids:
+        - master_window_change
+        - room2_window_change
+        - room3_window_change
+        - room4_window_change
+        - room5_window_change
+
+      away_mode_active: >
+        {# Guest Mode überschreibt Away — Gäste bekommen Lüftungs-Reminder #}
+        {% set guest_eid = inputs.guest_mode_boolean | default('') | string %}
+        {% set guest_on = guest_eid not in ['', 'sensor.none', 'none'] and is_state(guest_eid, 'on') %}
+        {% set ph = inputs.people_home_entity | default('') | string | trim %}
+        {% if guest_on %}
+          {{ false }}
+        {% elif ph not in ['', 'none', 'None'] and states[ph] is defined %}
+          {# Konsistent zum safety_away_mode-Trigger: zone='0', person/group='not_home', binary_sensor/group='off' #}
+          {{ states(ph) in ['0', 'not_home', 'off'] }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
+      # Sommermodus: zentraler Saison-Schalter (z. B. von der Heizungssteuerung gesetzt).
+      summer_mode_active: >
+        {% set b = inputs.summer_mode_boolean | default('') | string | trim %}
+        {{ (b not in ['', 'sensor.none', 'none', 'None']) and is_state(b, 'on') }}
+
+      quiet_active: >
+        {% if inputs.quiet_schedule | default('') | string | trim not in ['', 'none', 'None'] %}
+          {{ is_state(inputs.quiet_schedule, 'on') }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
+      rain_now: "{{ states(inputs.weather_entity) in rain_states }}"
+      # Schweres Wetter = Starkregen/Gewitter ODER Sturm -> blockt Lüften-/Kühl-Aufforderungen.
+      severe_now: "{{ (rain_now | bool(false)) or (states(inputs.weather_entity) in storm_states) }}"
+
+      co2_sensor_entity: "{{ inputs.co2_sensor | default('') | string | trim }}"
+      humidity_sensor_entity: "{{ inputs.humidity_sensor | default('') | string | trim }}"
+
+      co2_value: >
+        {% if co2_sensor_entity != '' and has_value(co2_sensor_entity) %}
+          {{ states(co2_sensor_entity) | float(0) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+
+      humidity_value: >
+        {% if humidity_sensor_entity != '' and has_value(humidity_sensor_entity) %}
+          {{ states(humidity_sensor_entity) | float(0) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+
+      co2_high: "{{ co2_sensor_entity != '' and (co2_value | float(0)) > (inputs.co2_threshold | float(1200)) }}"
+      humidity_high: "{{ humidity_sensor_entity != '' and (humidity_value | float(0)) > (inputs.humidity_threshold | float(60)) }}"
+
+      # Aktuelle Zeit liegt im Lüftungs-Zeitfenster.
+      # Schedule (wenn konfiguriert) überschreibt manuelle Start/Ende-Zeiten.
+      # Manuelle Zeiten unterstützen Über-Mitternacht-Bereiche (z.B. 22:00–06:00).
+      in_reminder_window: >
+        {%- set sched = inputs.reminder_schedule | default('') | string | trim -%}
+        {%- if sched not in ['', 'none', 'None'] -%}
+          {{ is_state(sched, 'on') }}
+        {%- else -%}
+          {%- set now_t = now().time() -%}
+          {%- set s = inputs.reminder_time_start | default('14:00:00') | string -%}
+          {%- set e = inputs.reminder_time_end | default('16:00:00') | string -%}
+          {%- set start_t = strptime(s, '%H:%M:%S').time() -%}
+          {%- set end_t = strptime(e, '%H:%M:%S').time() -%}
+          {%- if start_t <= end_t -%}
+            {{ start_t <= now_t <= end_t }}
+          {%- else -%}
+            {{ now_t >= start_t or now_t <= end_t }}
+          {%- endif -%}
+        {%- endif -%}
+
+      # Heizung läuft aktuell in mind. einem konfigurierten Climate
+      heating_active: >
+        {%- set cs = inputs.heating_climate_entities | default([]) -%}
+        {%- if cs is string -%}{%- set cs = [cs] if cs not in ['', 'none', 'None'] else [] -%}{%- endif -%}
+        {%- if cs | length == 0 -%}
+          {{ false }}
+        {%- else -%}
+          {%- set ns = namespace(active=false) -%}
+          {%- for c in cs -%}
+            {%- if state_attr(c, 'hvac_action') in ['heating', 'preheating'] -%}
+              {%- set ns.active = true -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.active }}
+        {%- endif -%}
+
+      # Sommer-Schutz: Außen ist wärmer als Innen → Lüften würde Wärme reinbringen.
+      # WICHTIG: exakt dieselbe Linie wie die Kühl-Empfehlung (innen + Kühl-Offset),
+      # sonst empfiehlt FLOW 1 Lüften, während FLOW 4b es als "zu warm" einstuft.
+      # Ohne konfigurierte Sensoren → keine Suppression.
+      outdoor_warmer_than_indoor: >
+        {%- set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim -%}
+        {%- set indoor_ok = indoor_s not in ['', 'none', 'None'] and has_value(indoor_s) -%}
+        {%- if not indoor_ok -%}
+          {{ false }}
+        {%- else -%}
+          {%- set indoor = states(indoor_s) | float(0) -%}
+          {%- set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim -%}
+          {%- set ns = namespace(outdoor=none) -%}
+          {%- if outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s) -%}
+            {%- set ns.outdoor = states(outdoor_s) | float(0) -%}
+          {%- elif inputs.weather_entity | default('') | string | trim != '' and state_attr(inputs.weather_entity, 'temperature') is not none -%}
+            {%- set ns.outdoor = state_attr(inputs.weather_entity, 'temperature') | float(0) -%}
+          {%- endif -%}
+          {%- if ns.outdoor is none -%}
+            {{ false }}
+          {%- else -%}
+            {{ ns.outdoor > (indoor + (inputs.cooling_hysteresis | float(0))) }}
+          {%- endif -%}
+        {%- endif -%}
+
+      # Heizverlust-Schutz: Close-Reminder/Eskalation unterdrücken wenn warm.
+      # Logik: (Innen ≥ Kühl-Innen-Schwelle ODER Außen ≥ Warm-Schwelle) UND
+      # kein Regen UND nicht away. Innensensor optional — fehlt er, zählt nur
+      # Außen. Fehlt auch die Außenquelle, bleibt false (Reminder läuft normal).
+      warm_alert_suppress: >
+        {%- set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim -%}
+        {%- set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim -%}
+        {%- set we = inputs.weather_entity | default('') | string | trim -%}
+        {%- set ind_thr = inputs.cooling_indoor_threshold | float(25) -%}
+        {%- set out_thr = inputs.warm_suppress_outdoor_threshold | float(20) -%}
+        {%- set ns = namespace(indoor_warm=false, outdoor_warm=false) -%}
+        {%- if indoor_s not in ['', 'none', 'None'] and has_value(indoor_s) -%}
+          {%- set ns.indoor_warm = (states(indoor_s) | float(0)) >= ind_thr -%}
+        {%- endif -%}
+        {%- if outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s) -%}
+          {%- set ns.outdoor_warm = (states(outdoor_s) | float(0)) >= out_thr -%}
+        {%- elif we != '' and state_attr(we, 'temperature') is not none -%}
+          {%- set ns.outdoor_warm = (state_attr(we, 'temperature') | float(0)) >= out_thr -%}
+        {%- endif -%}
+        {{ (ns.indoor_warm or ns.outdoor_warm) and not (rain_now | bool(false)) and not (away_mode_active | bool(false)) }}
+
+      any_window_open: >
+        {% set ns = namespace(open=false) %}
+        {% for w in window_entities %}
+          {% if w != '' and states[w] is defined and is_state(w, 'on') %}
+            {% set ns.open = true %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.open }}
+
+      # Offene Fenster OHNE AC-Abluftfenster (bei laufender Klima ist dieses Fenster
+      # die Abluft und darf offen bleiben -> aus Kühl-Schließ-Meldungen ausnehmen).
+      # Raum-Label zuerst, friendly_name nur als Fallback — Fensterkontakte
+      # heißen oft generisch "Fenster".
+      non_ac_open_windows: >
+        {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+        {% set ac_run = (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) %}
+        {% set ns = namespace(items=[]) %}
+        {% for r in rooms_runtime %}
+          {% set w = r.window %}
+          {% if w != '' and states[w] is defined and is_state(w, 'on') and not (ac_run and (w in ac_window_entities)) %}
+            {% set lbl = r.label | default('') | string | trim %}
+            {% if lbl == '' %}
+              {% set fn = state_attr(w, 'friendly_name') %}
+              {% set lbl = fn if (fn is not none and (fn | string | trim) != '') else w %}
+            {% endif %}
+            {% set ns.items = ns.items + [lbl] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+      non_ac_any_open: "{{ (non_ac_open_windows | length) > 0 }}"
+      non_ac_open_text: "{{ non_ac_open_windows | join(', ') if (non_ac_open_windows | length) > 0 else 'Fenster' }}"
+
+      window_opened_trigger: >
+        {% if trigger.id in window_trigger_ids and trigger.event is defined and trigger.event.data is defined and trigger.event.data.new_state is defined and trigger.event.data.new_state is not none and trigger.event.data.new_state.state is defined %}
+          {% set new_s = trigger.event.data.new_state.state %}
+          {% set old_s = trigger.event.data.old_state.state if (trigger.event.data.old_state is defined and trigger.event.data.old_state is not none and trigger.event.data.old_state.state is defined) else '' %}
+          {{ new_s == 'on' and old_s != 'on' }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
+      notify_targets_list: >
+        {% set raw = inputs.notify_device %}
+        {% set only_home = inputs.notify_only_when_home | bool(true) %}
+        {% set ns = namespace(items=[]) %}
+        {% set r_list = raw if (raw is iterable and raw is not string) else ([raw] if raw != '' else []) %}
+        {% for ent_raw in r_list %}
+          {% set ent = (ent_raw | string) | trim %}
+          {% if ent != '' %}
+            {% set dev_name = device_attr(ent, 'name') %}
+            {% if dev_name is string and (dev_name | trim) != '' %}
+              {% set slug = (dev_name | slugify) | replace('-', '_') %}
+              {% set tracker = 'device_tracker.' ~ slug %}
+              {% set tracker_present = states[tracker] is defined %}
+              {% set include = (not only_home) or (tracker_present and (states(tracker) == 'home')) or (not tracker_present) %}
+              {% if include %}
+                {% set ns.items = ns.items + ['notify.mobile_app_' ~ slug] %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | unique | join(',') }}
+
+      critical_targets_list: >
+        {% set raw = inputs.critical_notify_device %}
+        {% set only_home = inputs.notify_only_when_home | bool(true) %}
+        {% set ns = namespace(items=[]) %}
+        {% set r_list = raw if (raw is iterable and raw is not string) else ([raw] if raw != '' else []) %}
+        {% for ent_raw in r_list %}
+          {% set ent = (ent_raw | string) | trim %}
+          {% if ent != '' %}
+            {% set dev_name = device_attr(ent, 'name') %}
+            {% if dev_name is string and (dev_name | trim) != '' %}
+              {% set slug = (dev_name | slugify) | replace('-', '_') %}
+              {% set tracker = 'device_tracker.' ~ slug %}
+              {% set tracker_present = states[tracker] is defined %}
+              {% set include = (not only_home) or (tracker_present and (states(tracker) == 'home')) or (not tracker_present) %}
+              {% if include %}
+                {% set ns.items = ns.items + ['notify.mobile_app_' ~ slug] %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if (ns.items | length) == 0 %}
+          {{ notify_targets_list }}
+        {% else %}
+          {{ ns.items | unique | join(',') }}
+        {% endif %}
+
+      # ── Cooling variables ──
+      cooling_enabled: "{{ inputs.enable_cooling | bool(false) }}"
+
+      cooling_indoor_temp: >
+        {% set s = inputs.cooling_indoor_temp_sensor | default('') | string | trim %}
+        {% if s not in ['', 'none', 'None'] and has_value(s) %}
+          {{ states(s) | float(0) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+
+      cooling_outdoor_temp: >
+        {% set s = inputs.cooling_outdoor_temp_source | default('') | string | trim %}
+        {% if s not in ['', 'none', 'None'] and has_value(s) %}
+          {{ states(s) | float(0) }}
+        {% elif inputs.weather_entity | default('') | string | trim != '' and state_attr(inputs.weather_entity, 'temperature') is not none %}
+          {{ state_attr(inputs.weather_entity, 'temperature') | float(0) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+
+      # Cooling state aktuell empfehlenswert? (Mirror der trigger-Logik)
+      # Wird benötigt damit der zusätzliche Time-Trigger den State prüfen kann.
+      cooling_currently_recommended: >
+        {%- set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim -%}
+        {%- if (cooling_enabled | bool(false)) and indoor_s not in ['', 'none', 'None'] and has_value(indoor_s) -%}
+          {%- set indoor = states(indoor_s) | float(0) -%}
+          {%- set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim -%}
+          {%- set ns = namespace(outdoor=none) -%}
+          {%- if outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s) -%}
+            {%- set ns.outdoor = states(outdoor_s) | float(0) -%}
+          {%- elif inputs.weather_entity | default('') | string | trim != '' and state_attr(inputs.weather_entity, 'temperature') is not none -%}
+            {%- set ns.outdoor = state_attr(inputs.weather_entity, 'temperature') | float(0) -%}
+          {%- endif -%}
+          {%- if ns.outdoor is none -%}
+            {{ false }}
+          {%- else -%}
+            {%- set ns2 = namespace(any_open=false) -%}
+            {%- for w in window_entities -%}
+              {%- if states[w] is defined and is_state(w, 'on') -%}
+                {%- set ns2.any_open = true -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ indoor >= (inputs.cooling_indoor_threshold | float(25))
+               and ns.outdoor <= (indoor + (inputs.cooling_hysteresis | float(0)))
+               and not ns2.any_open }}
+          {%- endif -%}
+        {%- else -%}
+          {{ false }}
+        {%- endif -%}
+
+      # Daily-Reminder feuert nur wenn:
+      #  - Trigger ist Window-Open ODER Person-Arrived
+      #  - Erinnerung aktiviert
+      #  - Aktuell im Zeitfenster
+      #  - Heizung NICHT aktiv
+      #  - Außen NICHT wärmer als Innen (Sommer-Schutz)
+      #  - Sommer-Cooling würde NICHT gerade feuern (Kühlen hat Vorrang)
+      #  - Sommermodus NICHT aktiv — im Sommer übernimmt die Kühl-Logik (FLOW 4)
+      #    die abendliche Lüftungsaufforderung; die fixe-Zeit/Heimkehr-Aufforderung
+      #    entfällt daher. CO₂/Feuchte-Prompts bleiben (saisonunabhängig).
+      #  - Kein Fenster ist bereits offen (sonst "lüften!"-Notification während
+      #    schon gelüftet wird — nonsensical).
+      # CO2-Trigger feuert unabhängig von Zeitfenster/Heizung/Sommer (Gesundheit > Komfort),
+      # muss aber "kein Fenster offen" respektieren.
+      # Feuchte-Trigger zusätzlich mit Temp-Riegel: kein Lüften, wenn außen wärmer als
+      # innen — sonst bringt Lüften eher mehr Wärme/Feuchte rein als raus.
+      # POSITION-KRITISCH: Muss NACH allen referenzierten Variablen stehen
+      # (any_window_open, cooling_currently_recommended, ...) —
+      # sonst werden sie als Undefined evaluiert und die Guards greifen nicht.
+      reminder_triggered: >
+        {{
+          ((trigger.id in ['need_fresh_air_window_open', 'need_fresh_air_arrived'])
+           and (inputs.enable_daily_reminder | bool(false))
+           and (in_reminder_window | bool(false))
+           and not (heating_active | bool(false))
+           and not (outdoor_warmer_than_indoor | bool(false))
+           and not (cooling_currently_recommended | bool(false))
+           and not (summer_mode_active | bool(false))
+           and not (severe_now | bool(false))
+           and not (any_window_open | bool(false)))
+          or ((trigger.id == 'need_fresh_air_co2')
+              and not (any_window_open | bool(false)))
+          or ((trigger.id == 'need_fresh_air_humidity')
+              and not (any_window_open | bool(false))
+              and not (outdoor_warmer_than_indoor | bool(false))
+              and not (severe_now | bool(false)))
+        }}
+
+      # Kompakter Reason-String für Notification-Title in Klammern.
+      # Nur CO₂/Luftfeuchte werden angezeigt — Daily-Trigger bleibt ohne Bracket.
+      reminder_reason: >
+        {% set reasons = [] %}
+        {% if co2_high | bool(false) %}
+          {% set reasons = reasons + ['CO₂ ' ~ (co2_value | round(0) | int) ~ ' ppm'] %}
+        {% endif %}
+        {% if humidity_high | bool(false) %}
+          {% set reasons = reasons + ['Luftfeuchte ' ~ (humidity_value | round(0) | int) ~ '%'] %}
+        {% endif %}
+        {{ reasons | join(' · ') }}
+
+  # ════════════════════════════════════════════════════════════
+  # FLOW 0: PRESENCE-OFF RE-CHECK
+  # User verlässt Raum während Fenster offen → Re-Check ob Close-Reminder
+  # oder Eskalation fällig ist (basierend auf Fenster-Offen-Dauer).
+  # ════════════════════════════════════════════════════════════
+  - choose:
+      - conditions:
+          - "{{ (trigger.id | default('')) in presence_trigger_ids }}"
+          - "{{ trigger.event is defined and trigger.event.data is defined }}"
+          - "{{ trigger.event.data.new_state is not none and trigger.event.data.new_state.state == 'off' }}"
+          - "{{ trigger.event.data.old_state is not none and trigger.event.data.old_state.state != 'off' }}"
+          - "{{ not (quiet_active | bool(false)) }}"
+          # Re-Check nur nötig wenn Präsenz tatsächlich unterdrückt — sonst wurde bereits normal benachrichtigt.
+          - "{{ not (inputs.notify_on_presence | bool(false)) }}"
+        sequence:
+          - variables:
+              # Find rooms that: window open ≥ airing_duration AND no active presence.
+              # Classify each: critical if open ≥ airing + escalation_delay.
+              presence_recheck_rooms: >
+                {% set ns = namespace(items=[]) %}
+                {% set now_ts = as_timestamp(now()) | float(0) %}
+                {% set thresh_s = (inputs.airing_duration | float(10)) * 60 %}
+                {% set esc_s = thresh_s + (inputs.escalation_delay | float(20)) * 60 %}
+                {% for r in nag_rooms %}
+                  {% set w = r.window %}
+                  {% if states[w] is defined and is_state(w, 'on') %}
+                    {% set p = r.presence %}
+                    {% set presence_active = (p not in ['', 'none', 'None']) and (states[p] is defined) and is_state(p, 'on') %}
+                    {% if not presence_active %}
+                      {% set open_since = as_timestamp(states[w].last_changed, now_ts) | float(now_ts) %}
+                      {% set open_dur = now_ts - open_since %}
+                      {% if open_dur >= thresh_s %}
+                        {% set lbl_raw = r.label | trim %}
+                        {% set fn = state_attr(w, 'friendly_name') %}
+                        {% set lbl = lbl_raw if lbl_raw != '' else (fn if fn is not none else w) %}
+                        {% set is_critical = open_dur >= esc_s %}
+                        {% set ns.items = ns.items + [{'label': lbl, 'critical': is_critical}] %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items }}
+              presence_recheck_normal_labels: "{{ presence_recheck_rooms | rejectattr('critical') | map(attribute='label') | list }}"
+              presence_recheck_critical_labels: "{{ presence_recheck_rooms | selectattr('critical') | map(attribute='label') | list }}"
+
+          # Critical re-check (any room past escalation threshold)
+          - if:
+              - "{{ (presence_recheck_critical_labels | length) > 0 }}"
+              - "{{ (critical_targets_list | trim) != '' }}"
+              - "{{ not (warm_alert_suppress | bool(false)) }}"
+              # Im Sommer keine kritische Re-Check-Eskalation (nur 24h-Pfad in FLOW 2).
+              - "{{ not (summer_mode_active | bool(false)) }}"
+            then:
+              - repeat:
+                  for_each: "{{ (critical_targets_list | trim).split(',') if (critical_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "🚨 Fenster zu!"
+                        message: "{{ presence_recheck_critical_labels | join(', ') }} noch offen!\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung
+                          push:
+                            interruption-level: critical
+                            sound:
+                              name: alarm.caf
+                              critical: 1
+                              volume: 1.0
+                          ttl: 0
+                          priority: high
+                          actions:
+                            - action: "LUEFTUNG_SNOOZE_1H"
+                              title: "⏰ In 1h erinnern"
+                      continue_on_error: true
+
+          # Normal close-reminder re-check (rooms past airing_duration but not yet escalation)
+          - if:
+              - "{{ (presence_recheck_normal_labels | length) > 0 }}"
+              - "{{ (presence_recheck_critical_labels | length) == 0 }}"
+              - "{{ (notify_targets_list | trim) != '' }}"
+              - "{{ not (warm_alert_suppress | bool(false)) }}"
+            then:
+              - repeat:
+                  for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "🌬️ Fenster zu!"
+                        message: "{{ inputs.airing_duration | int }} min Lüftungszeit um. Noch offen: {{ presence_recheck_normal_labels | join(', ') }}.\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung
+                          push:
+                            sticky: true
+                      continue_on_error: true
+          - stop: "Presence re-check done"
+
+  # ════════════════════════════════════════════════════════════
+  # FLOW 1: NEED FRESH AIR
+  # ════════════════════════════════════════════════════════════
+  - choose:
+      - conditions:
+          - "{{ reminder_triggered | bool(false) }}"
+          - "{{ not (away_mode_active | bool(false)) }}"
+          - "{{ not (quiet_active | bool(false)) }}"
+          - "{{ (notify_targets_list | trim) != '' }}"
+        sequence:
+          # Stündliche Wetter-Vorhersage abrufen (für "bis X Uhr" / "ab X Uhr trocken")
+          - action: weather.get_forecasts
+            target:
+              entity_id: !input weather_entity
+            data:
+              type: hourly
+            response_variable: weather_forecast
+            continue_on_error: true
+          - variables:
+              forecast_list: >
+                {%- set we = inputs.weather_entity | default('') | string -%}
+                {%- if weather_forecast is defined and we in (weather_forecast | default({})) -%}
+                  {{ weather_forecast[we].forecast | default([], true) }}
+                {%- else -%}
+                  {{ [] }}
+                {%- endif -%}
+              # Slot bis zum Abend (heute 21:00) — danach gilt "am Abend"
+              evening_ts: "{{ as_timestamp(today_at('21:00')) | float(0) }}"
+              # Such-Zeitfenster: 12h voraus
+              rain_hint: >
+                {%- set rain_conds = ['rainy','pouring','snowy','snowy-rainy','lightning','lightning-rainy','hail'] -%}
+                {%- set fc = forecast_list | default([], true) -%}
+                {%- if rain_now | bool(false) -%}
+                  {# Aktuell Regen → nächste trockene Stunde finden #}
+                  {%- set ns = namespace(dry_at=none) -%}
+                  {%- for f in fc[:12] -%}
+                    {%- if ns.dry_at is none and (f.condition | default('') not in rain_conds) -%}
+                      {%- set ns.dry_at = f.datetime -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if ns.dry_at -%}
+                    ⛈️ Regen – ab {{ as_timestamp(ns.dry_at) | timestamp_custom('%H:%M', true) }} trocken
+                  {%- else -%}
+                    ⛈️ Regen – kurz und gezielt lüften!
+                  {%- endif -%}
+                {%- else -%}
+                  {# Aktuell trocken → nächsten Regen suchen #}
+                  {%- set ns = namespace(rain_at=none) -%}
+                  {%- for f in fc[:12] -%}
+                    {%- if ns.rain_at is none and (f.condition | default('') in rain_conds) -%}
+                      {%- set ns.rain_at = f.datetime -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if ns.rain_at and (as_timestamp(ns.rain_at) | float(0)) < (evening_ts | float(0)) -%}
+                    ☀️ Kein Regen – bis {{ as_timestamp(ns.rain_at) | timestamp_custom('%H:%M', true) }}
+                  {%- else -%}
+                    ☀️ Kein Regen – bis am Abend
+                  {%- endif -%}
+                {%- endif -%}
+          - repeat:
+              for_each: "{{ (notify_targets_list | trim).split(',') }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "🌬️ Zeit zum Lüften!{% if (reminder_reason | trim) != '' %} ({{ reminder_reason | trim }}){% endif %}"
+                    # FLOW 1 feuert nur wenn alle Fenster zu sind (reminder_triggered
+                    # gate), daher kein "Bereits offen"-Branch nötig.
+                    message: "{{ rain_hint }}"
+                    data:
+                      tag: lueftung
+                      push:
+                        sticky: true
+                  continue_on_error: true
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 2: WINDOW OPENED -> TIMER -> ESCALATION
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ window_opened_trigger | bool(false) }}"
+        sequence:
+          # Pro-Fenster-Lauf (mode: parallel): dieser Lauf behandelt NUR das
+          # auslösende Fenster. Andere Fenster haben ihre eigenen Läufe —
+          # keine Mehrfach-Meldungen über alle Räume hinweg mehr.
+          - variables:
+              run_window: "{{ trigger.event.data.entity_id }}"
+              run_room_presence: >
+                {% set ns = namespace(p='') %}
+                {% for r in rooms_runtime %}
+                  {% if r.window == run_window %}{% set ns.p = r.presence | default('') | string %}{% endif %}
+                {% endfor %}
+                {{ ns.p }}
+              run_label: >
+                {% set ns = namespace(l='') %}
+                {% for r in rooms_runtime %}
+                  {% if r.window == run_window %}{% set ns.l = r.label | default('') | string | trim %}{% endif %}
+                {% endfor %}
+                {% if ns.l != '' %}
+                  {{ ns.l }}
+                {% else %}
+                  {% set fn = state_attr(run_window, 'friendly_name') %}
+                  {{ fn if (fn is not none and (fn | string | trim) != '') else run_window }}
+                {% endif %}
+          - delay:
+              minutes: "{{ inputs.airing_duration }}"
+          # Eigenes Fenster schon wieder zu -> nichts zu tun.
+          - condition: template
+            value_template: "{{ is_state(run_window, 'on') }}"
+          - variables:
+              # Klima-Status JETZT (nach dem Delay) — wichtig, weil die Klima oft
+              # erst NACH dem Fenster-Öffnen eingeschaltet wird (sonst Fehlalarm).
+              ac_running_now: >
+                {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+                {{ (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) }}
+              run_is_ac_window: "{{ run_window in ac_window_entities }}"
+              run_presence_active: >
+                {% set p = run_room_presence | default('') | string %}
+                {{ (p not in ['', 'none', 'None']) and (states[p] is defined) and is_state(p, 'on') }}
+              run_eligible: >
+                {{ (not ((ac_running_now | bool(false)) and (run_is_ac_window | bool(false))))
+                   and ((inputs.notify_on_presence | bool(false)) or (not (run_presence_active | bool(false)))) }}
+              # >=2 offene Abluftfenster bei laufender Klima -> vermutlich eines vergessen.
+              ac_open_exhaust_windows: >
+                {% set ns = namespace(items=[]) %}
+                {% for w in ac_window_entities %}
+                  {% if states[w] is defined and is_state(w, 'on') %}
+                    {% set fn = state_attr(w, 'friendly_name') %}
+                    {% set ns.items = ns.items + [fn if (fn is not none and (fn | string | trim) != '') else w] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items }}
+              # Recompute warm_alert_suppress nach airing_duration delay.
+              # Werte können nach Lüftungsdauer kippen (Innen abgekühlt, Außen warm geworden).
+              warm_alert_suppress_now: >
+                {%- set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim -%}
+                {%- set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim -%}
+                {%- set we = inputs.weather_entity | default('') | string | trim -%}
+                {%- set ind_thr = inputs.cooling_indoor_threshold | float(25) -%}
+                {%- set out_thr = inputs.warm_suppress_outdoor_threshold | float(20) -%}
+                {%- set ns = namespace(indoor_warm=false, outdoor_warm=false) -%}
+                {%- if indoor_s not in ['', 'none', 'None'] and has_value(indoor_s) -%}
+                  {%- set ns.indoor_warm = (states(indoor_s) | float(0)) >= ind_thr -%}
+                {%- endif -%}
+                {%- if outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s) -%}
+                  {%- set ns.outdoor_warm = (states(outdoor_s) | float(0)) >= out_thr -%}
+                {%- elif we != '' and state_attr(we, 'temperature') is not none -%}
+                  {%- set ns.outdoor_warm = (state_attr(we, 'temperature') | float(0)) >= out_thr -%}
+                {%- endif -%}
+                {%- set rain_now_v = states(we) in rain_states if we != '' else false -%}
+                {{ (ns.indoor_warm or ns.outdoor_warm) and not (rain_now_v | bool(false)) and not (away_mode_active | bool(false)) }}
+
+              # Recompute cooling_beneficial_now after airing_duration delay
+              cooling_beneficial_now: >
+                {% set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim %}
+                {% set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim %}
+                {% set indoor_ok = indoor_s not in ['', 'none', 'None'] and has_value(indoor_s) %}
+                {% set outdoor_ok = (outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s)) or (inputs.weather_entity | default('') | string | trim != '' and state_attr(inputs.weather_entity, 'temperature') is not none) %}
+                {% if (inputs.enable_cooling | bool(false)) and indoor_ok and outdoor_ok %}
+                  {% set indoor_t = states(indoor_s) | float(0) %}
+                  {% set outdoor_t = states(outdoor_s) | float(0) if (outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s)) else (state_attr(inputs.weather_entity, 'temperature') | float(0)) %}
+                  {{ indoor_t >= (inputs.cooling_indoor_threshold | float(25)) and outdoor_t <= (indoor_t + (inputs.cooling_hysteresis | float(0))) and not (states(inputs.weather_entity) in rain_states) and not (states(inputs.weather_entity) in storm_states) and not (away_mode_active | bool(false)) }}
+                {% else %}
+                  {{ false }}
+                {% endif %}
+
+          # 10-min-Schließ-Meldung — nur fürs eigene Fenster. Unterdrückt bei:
+          # Kühlung sinnvoll, warmem Wetter, Sommermodus (dort gilt nur der
+          # 24h-Pfad), Präsenz im Raum, Abluftfenster bei laufender Klima,
+          # Ruhezeit.
+          - choose:
+              - conditions:
+                  - "{{ run_eligible | bool(false) }}"
+                  - "{{ not (cooling_beneficial_now | bool(false)) }}"
+                  - "{{ not (warm_alert_suppress_now | bool(false)) }}"
+                  - "{{ not (summer_mode_active | bool(false)) }}"
+                  - "{{ not (quiet_active | bool(false)) }}"
+                  - "{{ (notify_targets_list | trim) != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "🌬️ Fenster zu!"
+                            message: "{{ run_label }}: {{ inputs.airing_duration | int }} min Lüftungszeit um.\n(Lüftungs-Steuerung)"
+                            data:
+                              tag: "lueftung_{{ run_window | replace('.', '_') }}"
+                              push:
+                                sticky: true
+                          continue_on_error: true
+
+          # Klima läuft + ≥2 Abluftfenster offen -> vermutlich eines vergessen.
+          # Meldet nur der Lauf, dessen Fenster selbst ein Abluftfenster ist
+          # (sonst käme der Hinweis mehrfach).
+          - if:
+              - "{{ (run_is_ac_window | bool(false)) and (ac_running_now | bool(false)) and ((ac_open_exhaust_windows | length) >= 2) }}"
+              - "{{ (notify_targets_list | trim) != '' }}"
+            then:
+              - repeat:
+                  for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "❄️ Klima läuft — mehrere Abluftfenster offen"
+                        message: "Offen: {{ ac_open_exhaust_windows | join(', ') }}. Eines ist fürs Klimagerät, die anderen bitte schließen.\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung_ac
+                          push:
+                            sticky: true
+                      continue_on_error: true
+
+          # ───── SOMMER: keine Minuten-Eskalation. Erst wenn DIESES Fenster
+          #       > 24 h offen ist, wird es kritisch (mutebar). Klima-Status
+          #       wird LIVE geprüft (kann sich über Stunden ändern). ─────
+          - if:
+              - "{{ summer_mode_active | bool(false) }}"
+            then:
+              # Warten bis das eigene Fenster zu ist — max. 24h.
+              - wait_for_trigger:
+                  - trigger: template
+                    value_template: "{{ is_state(run_window, 'off') }}"
+                timeout:
+                  hours: 24
+                continue_on_timeout: true
+              # Timeout = nach 24h noch offen -> kritische, mutebare Eskalation.
+              - if:
+                  - "{{ not (wait.completed | bool(false)) }}"
+                  - "{{ (critical_targets_list | trim) != '' }}"
+                then:
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: >
+                            {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+                            {% set ac_run = (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) %}
+                            {{ is_state(run_window, 'on')
+                               and not (ac_run and (run_is_ac_window | bool(false)))
+                               and (repeat.index <= 24) }}
+                      sequence:
+                        - repeat:
+                            for_each: "{{ (critical_targets_list | trim).split(',') if (critical_targets_list | trim) != '' else [] }}"
+                            sequence:
+                              - action: "{{ repeat.item | trim }}"
+                                data:
+                                  title: "🚨 Fenster seit über 24 h offen!"
+                                  message: "{{ run_label }} ist seit mehr als 24 h offen.\n(Lüftungs-Steuerung)"
+                                  data:
+                                    tag: "lueftung_{{ run_window | replace('.', '_') }}"
+                                    push:
+                                      interruption-level: critical
+                                      sound:
+                                        name: alarm.caf
+                                        critical: 1
+                                        volume: 1.0
+                                    ttl: 0
+                                    priority: high
+                                    actions:
+                                      - action: "LUEFTUNG_MUTE_UNTIL_CLOSED"
+                                        title: "🔇 Stumm bis geschlossen"
+                                      - action: "LUEFTUNG_SNOOZE_1H"
+                                        title: "⏰ In 1h erinnern"
+                                continue_on_error: true
+                        # Auf Mute/Snooze-Tap ODER Fenster-zu warten; sonst nach 1h erneut.
+                        - wait_for_trigger:
+                            - trigger: event
+                              event_type: mobile_app_notification_action
+                              event_data:
+                                action: "LUEFTUNG_MUTE_UNTIL_CLOSED"
+                              id: mute
+                            - trigger: event
+                              event_type: mobile_app_notification_action
+                              event_data:
+                                action: "LUEFTUNG_SNOOZE_1H"
+                              id: snooze
+                            - trigger: template
+                              value_template: "{{ is_state(run_window, 'off') }}"
+                              id: closed
+                          timeout:
+                            hours: 1
+                          continue_on_timeout: true
+                        - choose:
+                            # Stumm bis geschlossen -> Lauf beenden (kein Alert mehr bis Fenster zu).
+                            - conditions:
+                                - "{{ wait.trigger is defined and wait.trigger.id == 'mute' }}"
+                              sequence:
+                                - stop: "Sommer: 24h-Alert gemutet bis Fenster geschlossen"
+                            # Snooze 1h -> Pause, dann Schleife erneut.
+                            - conditions:
+                                - "{{ wait.trigger is defined and wait.trigger.id == 'snooze' }}"
+                              sequence:
+                                - delay:
+                                    hours: 1
+                            # sonst: 1h-Timeout (erneut) oder Fenster zu (while bricht ab)
+              - stop: "Sommer: FLOW 2 erledigt (keine Minuten-Eskalation)"
+
+          # Eigenes Fenster noch offen? Sonst fertig.
+          - condition: template
+            value_template: "{{ is_state(run_window, 'on') }}"
+
+          # Stop escalation if cooling is beneficial
+          - condition: template
+            value_template: "{{ not (cooling_beneficial_now | bool(false)) }}"
+
+          # Stop escalation bei warm-Wetter (kein Heizverlust-Risiko)
+          - condition: template
+            value_template: "{{ not (warm_alert_suppress_now | bool(false)) }}"
+
+          - delay:
+              minutes: "{{ inputs.escalation_delay }}"
+
+          # Escalation loop with wait_for_trigger for snooze — alles LIVE:
+          # eigenes Fenster, Klima-Status, Präsenz, Kühl-/Warm-Suppress.
+          - choose:
+              - conditions:
+                  - "{{ (critical_targets_list | trim) != '' }}"
+                sequence:
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: >
+                            {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+                            {% set ac_run = (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) %}
+                            {% set p = run_room_presence | default('') | string %}
+                            {% set presence_active = (p not in ['', 'none', 'None']) and (states[p] is defined) and is_state(p, 'on') %}
+                            {% set eligible = is_state(run_window, 'on')
+                               and not (ac_run and (run_is_ac_window | bool(false)))
+                               and ((inputs.notify_on_presence | bool(false)) or not presence_active) %}
+                            {% set indoor_s = inputs.cooling_indoor_temp_sensor | default('') | string | trim %}
+                            {% set outdoor_s = inputs.cooling_outdoor_temp_source | default('') | string | trim %}
+                            {% set we = inputs.weather_entity | default('') | string | trim %}
+                            {% set cool_ok = false %}
+                            {% set indoor_t = states(indoor_s) | float(0) if (indoor_s not in ['', 'none', 'None'] and has_value(indoor_s)) else none %}
+                            {% set outdoor_t = none %}
+                            {% if outdoor_s not in ['', 'none', 'None'] and has_value(outdoor_s) %}
+                              {% set outdoor_t = states(outdoor_s) | float(0) %}
+                            {% elif we != '' and state_attr(we, 'temperature') is not none %}
+                              {% set outdoor_t = state_attr(we, 'temperature') | float(0) %}
+                            {% endif %}
+                            {% if (inputs.enable_cooling | bool(false)) and indoor_t is not none and outdoor_t is not none %}
+                              {% set cool_ok = indoor_t >= (inputs.cooling_indoor_threshold | float(25)) and outdoor_t <= (indoor_t + (inputs.cooling_hysteresis | float(0))) %}
+                            {% endif %}
+                            {# Heizverlust-Schutz: warmes Wetter UND kein Regen UND nicht away → Eskalation stoppen #}
+                            {% set indoor_warm = (indoor_t is not none) and (indoor_t >= (inputs.cooling_indoor_threshold | float(25))) %}
+                            {% set outdoor_warm = (outdoor_t is not none) and (outdoor_t >= (inputs.warm_suppress_outdoor_threshold | float(20))) %}
+                            {% set rain_v = (we != '') and (states(we) in rain_states) %}
+                            {% set warm_suppress = (indoor_warm or outdoor_warm) and not rain_v and not (away_mode_active | bool(false)) %}
+                            {{ eligible and not cool_ok and not warm_suppress and repeat.index <= 60 }}
+                      sequence:
+                        # Send critical notification with action buttons
+                        - repeat:
+                            for_each: "{{ (critical_targets_list | trim).split(',') if (critical_targets_list | trim) != '' else [] }}"
+                            sequence:
+                              - action: "{{ repeat.item | trim }}"
+                                data:
+                                  title: "🚨 Fenster zu!"
+                                  message: "{{ run_label }} noch offen!\n(Lüftungs-Steuerung)"
+                                  data:
+                                    tag: "lueftung_{{ run_window | replace('.', '_') }}"
+                                    push:
+                                      interruption-level: critical
+                                      sound:
+                                        name: alarm.caf
+                                        critical: 1
+                                        volume: 1.0
+                                    ttl: 0
+                                    priority: high
+                                    actions:
+                                      - action: "LUEFTUNG_SNOOZE_1H"
+                                        title: "⏰ In 1h erinnern"
+                                continue_on_error: true
+
+                        # Wait for snooze action OR 1 minute timeout
+                        - wait_for_trigger:
+                            - trigger: event
+                              event_type: mobile_app_notification_action
+                              event_data:
+                                action: "LUEFTUNG_SNOOZE_1H"
+                          timeout:
+                            minutes: 1
+                          continue_on_timeout: true
+
+                        # Handle snooze button response
+                        - choose:
+                            # ── Snooze 1h ──
+                            - conditions:
+                                - "{{ wait.trigger is defined and wait.trigger.event.data.action == 'LUEFTUNG_SNOOZE_1H' }}"
+                              sequence:
+                                - repeat:
+                                    for_each: "{{ (critical_targets_list | trim).split(',') if (critical_targets_list | trim) != '' else [] }}"
+                                    sequence:
+                                      - action: "{{ repeat.item | trim }}"
+                                        data:
+                                          title: "⏰ Alerts pausiert"
+                                          message: "Fenster-Erinnerung in 1 Stunde."
+                                          data:
+                                            tag: lueftung
+                                            push:
+                                              sticky: true
+                                        continue_on_error: true
+                                - delay:
+                                    hours: 1
+                                # Loop continues after delay → re-checks while condition
+
+                          # Default: timeout → loop continues (next alert in ~1 min)
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 3: SAFETY (RAIN / STORM / AWAY MODE)
+      # Präsenz-aware: Räume mit aktiver Präsenz werden aus Liste gefiltert.
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ (trigger.id in ['safety_rain', 'safety_storm', 'safety_away_mode']) | bool(false) }}"
+        sequence:
+          - variables:
+              safety_due_to_rain: "{{ (trigger.id == 'safety_rain') | bool(false) }}"
+              safety_due_to_storm: "{{ (trigger.id == 'safety_storm') | bool(false) }}"
+              safety_due_to_away_mode: "{{ ((trigger.id == 'safety_away_mode') and (away_mode_active | bool(false))) | bool(false) }}"
+              # Präsenz-Filter ignorieren bei Away-Mode ODER globalem Toggle
+              safety_ignore_presence: "{{ (safety_due_to_away_mode | bool(false)) or (inputs.notify_on_presence | bool(false)) }}"
+              safety_rooms_to_notify: >
+                {% set ns = namespace(items=[]) %}
+                {% for r in rooms_runtime %}
+                  {% set w = r.window %}
+                  {% if states[w] is defined and is_state(w, 'on') %}
+                    {% set p = r.presence %}
+                    {% set presence_active = (p not in ['', 'none', 'None']) and (states[p] is defined) and is_state(p, 'on') %}
+                    {% if safety_ignore_presence or not presence_active %}
+                      {% set lbl_raw = r.label | trim %}
+                      {% set fn = state_attr(w, 'friendly_name') %}
+                      {% set lbl = lbl_raw if lbl_raw != '' else (fn if fn is not none else w) %}
+                      {% set ns.items = ns.items + [lbl] %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items }}
+              safety_rooms_text: "{{ safety_rooms_to_notify | join(', ') if (safety_rooms_to_notify | length) > 0 else 'Fenster' }}"
+              safety_should_alert: "{{ ((safety_rooms_to_notify | length) > 0) and ((safety_due_to_rain | bool(false)) or (safety_due_to_storm | bool(false)) or (safety_due_to_away_mode | bool(false))) }}"
+              safety_reason: >
+                {% if safety_due_to_rain | bool(false) %}
+                  🌧️ Regen erkannt
+                {% elif safety_due_to_storm | bool(false) %}
+                  🌬️ Sturm erkannt
+                {% elif safety_due_to_away_mode | bool(false) %}
+                  🏠 Away Mode aktiviert
+                {% else %}
+                  ⚠️ Sicherheits-Event
+                {% endif %}
+
+          - choose:
+              # SOMMER: normale (nicht-kritische) Meldung, keine Eskalation.
+              # Auch Niesel/Regen/Sturm -> du kannst meist problemlos weiterlüften.
+              - conditions:
+                  - "{{ safety_should_alert | bool(false) }}"
+                  - "{{ summer_mode_active | bool(false) }}"
+                  - "{{ (notify_targets_list | trim) != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "⚠️ Fenster offen!"
+                            message: "{{ safety_reason }}. Offene Fenster: {{ safety_rooms_text }}.\n(Lüftungs-Steuerung)"
+                            data:
+                              tag: lueftung
+                              push:
+                                interruption-level: time-sensitive
+                                sticky: true
+                          continue_on_error: true
+              # WINTER: kritische Meldung (bisheriges Verhalten).
+              - conditions:
+                  - "{{ safety_should_alert | bool(false) }}"
+                  - "{{ not (summer_mode_active | bool(false)) }}"
+                  - "{{ (critical_targets_list | trim) != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ (critical_targets_list | trim).split(',') if (critical_targets_list | trim) != '' else [] }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "⚠️ Fenster offen!"
+                            message: "{{ safety_reason }}. Offene Fenster: {{ safety_rooms_text }}.\n(Lüftungs-Steuerung)"
+                            data:
+                              tag: lueftung
+                              push:
+                                interruption-level: critical
+                                sound:
+                                  name: alarm.caf
+                                  critical: 1
+                                  volume: 1.0
+                              ttl: 0
+                              priority: high
+                          continue_on_error: true
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 4: SUMMER COOLING — Lüften lohnt sich (Fenster auf)
+      # Rein temperaturbasiert (kein Zeitfenster). Trigger:
+      #   - cooling_open_recommended: State-Transition (außen fällt unter innen)
+      #   - cooling_hourly_recheck: Stündlicher Re-Check (Anti-Ignore-Spam)
+      # Re-Notification stoppt automatisch sobald Fenster offen → cooling_currently_recommended=false.
+      # Nachts schützt der Ruhezeit-Zeitplan vor Pushes.
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ trigger.id in ['cooling_open_recommended', 'cooling_hourly_recheck'] }}"
+          - "{{ cooling_currently_recommended | bool(false) }}"
+          # Kein "Fenster auf zum Kühlen" bei schwerem Wetter (Sturm/Gewitter/Starkregen).
+          - "{{ not (severe_now | bool(false)) }}"
+          - "{{ not (quiet_active | bool(false)) }}"
+          - "{{ not (away_mode_active | bool(false)) }}"
+          - "{{ (notify_targets_list | trim) != '' }}"
+        sequence:
+          # Hourly Forecast für "Lüften lohnt bis HH:MM"
+          - action: weather.get_forecasts
+            target:
+              entity_id: !input weather_entity
+            data:
+              type: hourly
+            response_variable: weather_forecast
+            continue_on_error: true
+          - variables:
+              forecast_list: >
+                {%- set we = inputs.weather_entity | default('') | string -%}
+                {%- if weather_forecast is defined and we in (weather_forecast | default({})) -%}
+                  {{ weather_forecast[we].forecast | default([], true) }}
+                {%- else -%}
+                  {{ [] }}
+                {%- endif -%}
+              # Erste Stunde wo Außen wieder > (Innen + Offset) → Lüften lohnt nicht mehr
+              cooling_until: >
+                {%- set fc = forecast_list | default([], true) -%}
+                {%- set indoor = cooling_indoor_temp | float(0) -%}
+                {%- set hyst = inputs.cooling_hysteresis | float(0) -%}
+                {%- set cutoff = indoor + hyst -%}
+                {%- set ns = namespace(end_at=none) -%}
+                {%- for f in fc[:12] -%}
+                  {%- if ns.end_at is none and (f.temperature | float(99) > cutoff) -%}
+                    {%- set ns.end_at = f.datetime -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if ns.end_at -%}
+                  {{ as_timestamp(ns.end_at) | timestamp_custom('%H:%M', true) }}
+                {%- endif -%}
+              cooling_hint: >
+                {%- if (cooling_until | trim) != '' -%}
+                  Lüften lohnt bis {{ cooling_until }}.
+                {%- else -%}
+                  Lüften lohnt sich jetzt.
+                {%- endif -%}
+          - repeat:
+              for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "❄️ Fenster auf — kühlen!"
+                    message: "Innen {{ cooling_indoor_temp | float(0) | round(1) }}°C, außen {{ cooling_outdoor_temp | float(0) | round(1) }}°C.\n{{ cooling_hint }}"
+                    data:
+                      tag: lueftung
+                      push:
+                        sticky: true
+                  continue_on_error: true
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 4b: COOLING — Außen wärmer als innen (Fenster offen)
+      # Rein temperaturbasiert: feuert auf der Kipp-Flanke (außen steigt über
+      # innen + Offset, außen über Innen-Schwelle) — typischerweise morgens.
+      # Ersetzt die frühere fixe Morgen-Erinnerung.
+      # Stage 1: Normaler Push.
+      # Stage 2: 60 Min später erneute NORMALE Erinnerung wenn Fenster immer
+      # noch offen (bewusst kein Critical — morgens schläft evtl. noch jemand).
+      # Beide Stages durch cooling_outdoor_warmer_alert-Toggle steuerbar.
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ trigger.id == 'cooling_outdoor_warmer' }}"
+          - "{{ inputs.cooling_outdoor_warmer_alert | bool(true) }}"
+          # Nur wenn ein offenes Fenster KEIN AC-Abluftfenster ist (sonst nur Klima-Vent offen).
+          - "{{ non_ac_any_open | bool(false) }}"
+          - "{{ not (quiet_active | bool(false)) }}"
+          - "{{ not (away_mode_active | bool(false)) }}"
+          - "{{ (notify_targets_list | trim) != '' }}"
+        sequence:
+          # Stage 1: normaler Push
+          - repeat:
+              for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "🌡️ Fenster zu — zu warm draußen"
+                    message: "Außen {{ cooling_outdoor_temp | float(0) | round(1) }}°C, innen {{ cooling_indoor_temp | float(0) | round(1) }}°C. Offen: {{ non_ac_open_text }}."
+                    data:
+                      tag: lueftung
+                      push:
+                        sticky: true
+                  continue_on_error: true
+
+          # Stage 2: 60 Min Wartezeit. Wenn User Fenster schließt → wait completed → kein Critical.
+          # Wenn Timeout (Fenster immer noch offen) → Critical-Alert auf critical_targets_list.
+          # WICHTIG: Live-State-Check (states[w]) statt der gespeicherten Variable
+          # any_window_open — letztere ist statisch und hätte den Schließ-Event nie erkannt.
+          - wait_template: >
+              {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+              {% set ac_run = (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) %}
+              {% set ns = namespace(open=false) %}
+              {% for w in window_entities %}
+                {% if w != '' and states[w] is defined and is_state(w, 'on') and not (ac_run and (w in ac_window_entities)) %}
+                  {% set ns.open = true %}
+                {% endif %}
+              {% endfor %}
+              {{ not ns.open }}
+            timeout: "01:00:00"
+            continue_on_timeout: true
+          # Live-Werte berechnen — Top-Action-Vars sind nach 60min stale.
+          # Targets neu berechnen weil der Anwesenheits-Filter sich während
+          # des Waits geändert haben kann (jemand kommt heim).
+          - variables:
+              stage2_quiet_now: >
+                {% set sched = inputs.quiet_schedule | default('') | string | trim %}
+                {% if sched not in ['', 'none', 'None'] %}
+                  {{ is_state(sched, 'on') }}
+                {% else %}
+                  {{ false }}
+                {% endif %}
+              stage2_away_now: >
+                {% set guest_eid = inputs.guest_mode_boolean | default('') | string %}
+                {% set guest_on = guest_eid not in ['', 'sensor.none', 'none'] and is_state(guest_eid, 'on') %}
+                {% set ph = inputs.people_home_entity | default('') | string | trim %}
+                {% if guest_on %}
+                  {{ false }}
+                {% elif ph not in ['', 'none', 'None'] and states[ph] is defined %}
+                  {{ states(ph) in ['0', 'not_home', 'off'] }}
+                {% else %}
+                  {{ false }}
+                {% endif %}
+              stage2_targets_now: >
+                {% set raw = inputs.notify_device %}
+                {% set only_home = inputs.notify_only_when_home | bool(true) %}
+                {% set ns = namespace(items=[]) %}
+                {% set r_list = raw if (raw is iterable and raw is not string) else ([raw] if raw != '' else []) %}
+                {% for ent_raw in r_list %}
+                  {% set ent = (ent_raw | string) | trim %}
+                  {% if ent != '' %}
+                    {% set dev_name = device_attr(ent, 'name') %}
+                    {% if dev_name is string and (dev_name | trim) != '' %}
+                      {% set slug = (dev_name | slugify) | replace('-', '_') %}
+                      {% set tracker = 'device_tracker.' ~ slug %}
+                      {% set tracker_present = states[tracker] is defined %}
+                      {% set include = (not only_home) or (tracker_present and (states(tracker) == 'home')) or (not tracker_present) %}
+                      {% if include %}
+                        {% set ns.items = ns.items + ['notify.mobile_app_' ~ slug] %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items | unique | join(',') }}
+              stage2_indoor_temp: >
+                {% set s = inputs.cooling_indoor_temp_sensor | default('') | string | trim %}
+                {% if s not in ['', 'none', 'None'] and has_value(s) %}
+                  {{ states(s) | float(0) }}
+                {% else %}
+                  {{ 0 }}
+                {% endif %}
+              stage2_outdoor_temp: >
+                {% set s = inputs.cooling_outdoor_temp_source | default('') | string | trim %}
+                {% if s not in ['', 'none', 'None'] and has_value(s) %}
+                  {{ states(s) | float(0) }}
+                {% elif inputs.weather_entity | default('') | string | trim != '' and state_attr(inputs.weather_entity, 'temperature') is not none %}
+                  {{ state_attr(inputs.weather_entity, 'temperature') | float(0) }}
+                {% else %}
+                  {{ 0 }}
+                {% endif %}
+              stage2_open_windows: >
+                {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+                {% set ac_run = (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) %}
+                {% set ns = namespace(items=[]) %}
+                {% for r in rooms_runtime %}
+                  {% set w = r.window %}
+                  {% if w != '' and states[w] is defined and is_state(w, 'on') and not (ac_run and (w in ac_window_entities)) %}
+                    {% set lbl = r.label | default('') | string | trim %}
+                    {% if lbl == '' %}
+                      {% set fn = state_attr(w, 'friendly_name') %}
+                      {% set lbl = fn if (fn is not none and (fn | string | trim) != '') else w %}
+                    {% endif %}
+                    {% set ns.items = ns.items + [lbl] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items | join(', ') if ns.items | length > 0 else 'Fenster' }}
+          # Stage 2 ist bewusst eine NORMALE Nachricht (kein Critical, kein
+          # Alarm-Ton) — morgens schläft eventuell noch jemand.
+          - choose:
+              - conditions:
+                  - "{{ not (wait.completed | default(false)) }}"
+                  - "{{ not (stage2_quiet_now | bool(false)) }}"
+                  - "{{ not (stage2_away_now | bool(false)) }}"
+                  - "{{ (stage2_targets_now | trim) != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ (stage2_targets_now | trim).split(',') if (stage2_targets_now | trim) != '' else [] }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "🌡️ Fenster immer noch offen"
+                            message: "Außen {{ stage2_outdoor_temp | float(0) | round(1) }}°C heizt seit 1h rein. Innen {{ stage2_indoor_temp | float(0) | round(1) }}°C. Offen: {{ stage2_open_windows }}.\n(Lüftungs-Steuerung)"
+                            data:
+                              tag: lueftung
+                              push:
+                                sticky: true
+                          continue_on_error: true
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 5: KLIMA — Freie Kühlung -> Rückfrage-Push, dann Klima aus
+      # Außen kühler als innen, Klima läuft. Bei aktiver Automatik: Push mit
+      # "Weiterlaufen lassen"-Button; ohne Antwort wird nach 10 min
+      # abgeschaltet. Ohne Automatik: nur Info-Push.
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ trigger.id == 'ac_free_cooling' }}"
+          - "{{ ac_running | bool(false) }}"
+          - "{{ not (rain_now | bool(false)) }}"
+          - "{{ not (quiet_active | bool(false)) }}"
+          - "{{ (notify_targets_list | trim) != '' }}"
+        sequence:
+          - if:
+              - "{{ inputs.ac_enable_auto_off | bool(false) }}"
+            then:
+              # Ankündigung mit Abbruch-Möglichkeit.
+              - repeat:
+                  for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "❄️ Freie Kühlung — Klima gleich aus"
+                        message: "Draußen {{ cooling_outdoor_temp | float(0) | round(1) }}°C, innen {{ cooling_indoor_temp | float(0) | round(1) }}°C — Fenster auf kühlt gratis.\nKlima wird in 10 min ausgeschaltet.\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung_ac
+                          push:
+                            sticky: true
+                            interruption-level: time-sensitive
+                          actions:
+                            - action: "LUEFTUNG_AC_WEITERLAUFEN"
+                              title: "▶️ Weiterlaufen lassen"
+                            - action: "LUEFTUNG_AC_JETZT_AUS"
+                              title: "🔌 Jetzt ausschalten"
+                      continue_on_error: true
+              - wait_for_trigger:
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "LUEFTUNG_AC_WEITERLAUFEN"
+                    id: keep_running
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "LUEFTUNG_AC_JETZT_AUS"
+                    id: off_now
+                timeout:
+                  minutes: 10
+                continue_on_timeout: true
+              - if:
+                  - "{{ wait.trigger is defined and wait.trigger is not none and (wait.trigger.id | default('')) == 'keep_running' }}"
+                then:
+                  - stop: "Klima laeuft auf Wunsch weiter (Weiterlaufen-Button)"
+              # Timeout oder "Jetzt ausschalten" -> aus, falls noch an (live).
+              - if:
+                  - >-
+                    {% set e = inputs.ac_climate_entity | default('') | string | trim %}
+                    {{ (e not in ['', 'none', 'None']) and (states(e) not in ['off', 'unavailable', 'unknown', '', 'none']) }}
+                then:
+                  - action: climate.turn_off
+                    target:
+                      entity_id: "{{ inputs.ac_climate_entity }}"
+                    continue_on_error: true
+                  - repeat:
+                      for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "❄️ Klima aus — freie Kühlung"
+                            message: "Klima ausgeschaltet. Fenster auf zum Kühlen spart Energie.\n(Lüftungs-Steuerung)"
+                            data:
+                              tag: lueftung_ac
+                              push:
+                                sticky: true
+                          continue_on_error: true
+            else:
+              # Automatik aus: nur Info.
+              - repeat:
+                  for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "❄️ Freie Kühlung möglich"
+                        message: "Draußen {{ cooling_outdoor_temp | float(0) | round(1) }}°C, innen {{ cooling_indoor_temp | float(0) | round(1) }}°C. Fenster auf statt Klima spart Energie.\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung_ac
+                          push:
+                            sticky: true
+                      continue_on_error: true
+
+      # ════════════════════════════════════════════════════════
+      # FLOW 5b: KLIMA — Innen-Schwelle erreicht -> Ziel erfüllt, Klima aus
+      # Innentemperatur ≤ Innen-Schwelle (10 min stabil, siehe Trigger).
+      # Nur bei aktiver Klima-Automatik.
+      # ════════════════════════════════════════════════════════
+      - conditions:
+          - "{{ trigger.id == 'ac_target_reached' }}"
+          - "{{ ac_running | bool(false) }}"
+          - "{{ inputs.ac_enable_auto_off | bool(false) }}"
+        sequence:
+          - action: climate.turn_off
+            target:
+              entity_id: "{{ inputs.ac_climate_entity }}"
+            continue_on_error: true
+          - if:
+              - "{{ (notify_targets_list | trim) != '' }}"
+            then:
+              - repeat:
+                  for_each: "{{ (notify_targets_list | trim).split(',') if (notify_targets_list | trim) != '' else [] }}"
+                  sequence:
+                    - action: "{{ repeat.item | trim }}"
+                      data:
+                        title: "✅ Ziel erreicht — Klima aus"
+                        message: "Innen {{ cooling_indoor_temp | float(0) | round(1) }}°C (Schwelle {{ inputs.cooling_indoor_threshold | float(25) | round(1) }}°C). Klima ausgeschaltet.\n(Lüftungs-Steuerung)"
+                        data:
+                          tag: lueftung_ac
+                          push:
+                            sticky: true
+                      continue_on_error: true

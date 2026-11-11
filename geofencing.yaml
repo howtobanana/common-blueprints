@@ -1,0 +1,659 @@
+blueprint:
+  name: "(Common) Geofencing"
+  description: |
+    🌍 **Modul: Geofencing & Anwesenheit**
+
+    Setzt den globalen Abwesend-Helfer aus Entfernung und Personen und schaltet beim Heimweg optional die Vorheizen-Helfer der Heizung. Unabhängig vom Heizungshersteller: Die Heizungssteuerung (z. B. Heating Core) liest nur die Helfer.
+
+    **Kern-Funktionen:**
+    - 📍 Distanzbasierte Abwesend-Entscheidung über `proximity`.
+    - 👥 Person-basierter Abgleich – Abwesend nur, wenn ALLE Personen weg sind.
+    - ⏱️ Kurzabwesenheits-Filter (Timeout).
+    - 🎚️ Steuert den zentralen Abwesend-Helfer (auch für Licht und andere Automationen nutzbar).
+    - 🔥 Vorheizen beim Heimweg: aus, automatisch oder mit Bestätigung per Push.
+    - ❄️ Sommermodus-aware: keine Abwesend-/Vorheizen-Pushs, wenn der Sommer-Schalter an ist. Der Abwesend-Helfer wird weiterhin gesetzt.
+
+    **Zusammenspiel:**
+    *   🌡️ Heizungssteuerung (z. B. Heating Core): liest Abwesend- und Vorheizen-Helfer.
+    *   💨 `(Common) Lüftungs-Steuerung` (Lüften & Fenster).
+
+    **Version:** 1.0 | **Autor:** Fabian Brandl
+
+  domain: automation
+  author: "Fabian Brandl"
+
+  input:
+    section_geo_fencing:
+      name: "🏠 Anwesenheits-Management"
+      description: |
+        Smart Zone: Entscheidet Away anhand Distanzradius + Person-Status.
+        Der Away-Helper wird sofort gesetzt, wenn die Bedingungen erfüllt sind.
+      collapsed: false
+      input:
+        proximity_entity:
+          name: "📍 Distanz-Sensor"
+          description: |
+            Distanzsensor zur Home-Zone. Einheit wird automatisch erkannt (km oder m).
+
+            In modernen HA-Versionen (2023+) gibt es KEINE proximity.{name} Entity mehr.
+            Stattdessen werden Sensor-Sub-Entities verwendet:
+
+            📌 Empfohlen (alle Personen automatisch): sensor.{name}_nearest_distance
+               z.B. → sensor.wien_nearest_distance
+
+            👤 Personen-spezifisch (nur eine Person): sensor.{name}_{person}_distance
+               z.B. → sensor.wien_fabian_distance
+          selector:
+            entity:
+              domain:
+                - sensor
+                - proximity
+
+        direction_entity:
+          name: "🧭 Fahrtrichtungs-Sensor (optional)"
+          description: |
+            Optionaler Sensor für die Fahrtrichtung zur Home-Zone.
+            Wird für die Pre-Heat Heimweg-Erkennung genutzt:
+            Vorheizen startet nur wenn Richtung = "towards".
+
+            In modernen HA-Versionen: sensor.{name}_nearest_direction_of_travel
+               z.B. → sensor.wien_nearest_direction_of_travel
+
+            👤 Personen-spezifisch: sensor.{name}_{person}_direction_of_travel
+               z.B. → sensor.wien_fabian_direction_of_travel
+
+            Erwartete Werte: towards, away_from, stationary, unknown.
+            Leer lassen → Pre-Heat reagiert nicht auf Fahrtrichtung.
+          default: ""
+          selector:
+            entity:
+              domain:
+                - sensor
+                - proximity
+
+        person_entity:
+          name: "👥 Personen zum Tracken"
+          description: |
+            Alle Haushaltsmitglieder als Person-Entities eintragen.
+            Away wird NUR aktiviert, wenn ALLE hier gelisteten Personen abwesend sind.
+            Ist eine Person noch zu Hause → Away bleibt aus.
+
+            Beispiel: person.fabian + person.teresa
+          default: []
+          selector:
+            entity:
+              multiple: true
+              domain: person
+
+        preheat_radius:
+          name: "🎯 Radius-Schwelle (km)"
+          description: |
+            Ab diesem Radius wird Away direkt aktiv (Distance > Radius).
+          default: 5
+          selector:
+            number:
+              min: 0.1
+              max: 100
+              step: 0.1
+              unit_of_measurement: "km"
+
+        short_absence_timeout:
+          name: "⏱️ Kurzabwesenheit Timeout (min)"
+          description: |
+            Innerhalb des Radius bleibt Away aus, bis seit Verlassen von Home diese Zeit verstrichen ist.
+          default: 20
+          selector:
+            number:
+              min: 0
+              max: 180
+              step: 1
+              unit_of_measurement: "min"
+
+        away_mode_boolean:
+          name: "🎚️ Zu steuernder Away-Helper"
+          description: |
+            Dieser input_boolean wird AN/AUS geschaltet (Pflichtfeld für Modul-Verbund).
+            So erstellen: Einstellungen → Geräte & Dienste → Helfer → Helfer erstellen → Umschalter (input_boolean).
+            Beispiel: input_boolean.away_mode
+            ⚠️ Derselbe Helfer, den die Heizungssteuerung als Abwesend-Schalter nutzt (Heating Core: Einstellungen → Abwesend-Schalter).
+          selector:
+            entity:
+              multiple: true
+              domain: input_boolean
+
+    section_pre_heat:
+      name: "🔥 Pre-Heat (Vorheizen)"
+      description: |
+        Optionales Vorheizen beim Heimweg. Schaltet die Vorheizen-Helfer der Heizungssteuerung.
+        **OFF:** Kein Vorheizen.
+        **CONFIRM (empfohlen):** Push bei Heimweg mit "Vorheizen ✅"-Button — Pre-Heat startet NUR bei Tap.
+        **ON:** Automatisch vorheizen (kein Opt-in).
+      collapsed: true
+      input:
+        pre_heat_mode:
+          name: "🔥 Pre-Heat Modus"
+          description: |
+            **off:** Kein Vorheizen.
+            **confirm (empfohlen):** Push bei Heimweg — Pre-Heat startet NUR wenn du auf "Vorheizen ✅" tippst.
+              Kein automatisches Feuern. Ideal wenn du kurze Ausflüge machst und nicht jedes Mal vorgeheizt werden soll.
+            **on:** Automatisch alle konfigurierten Räume vorheizen wenn Heimweg erkannt.
+          default: "off"
+          selector:
+            select:
+              options:
+                - label: "Aus"
+                  value: "off"
+                - label: "Bestätigen (empfohlen)"
+                  value: "confirm"
+                - label: "Automatisch"
+                  value: "on"
+        pre_heat_helpers:
+          name: "🏠 Pre-Heat Helper (Räume)"
+          description: |
+            Die input_boolean Helper zum Vorheizen der gewünschten Räume.
+            Dieselben, die in der Heizungssteuerung eingetragen sind (Heating Core: Vorheizen-Helfer am Heizkreis).
+            z.B. input_boolean.pre_heat_office, input_boolean.pre_heat_schlafzimmer
+          default: []
+          selector:
+            entity:
+              domain: input_boolean
+              multiple: true
+        pre_heat_radius:
+          name: "📍 Pre-Heat Radius (km)"
+          description: |
+            Ab welcher Distanz soll der Heimweg erkannt werden?
+            Sollte KLEINER sein als der Away-Radius.
+            Wird nur ausgelöst wenn Fahrtrichtung = "towards".
+          default: 3.0
+          selector:
+            number:
+              min: 0.5
+              max: 50
+              step: 0.5
+              unit_of_measurement: "km"
+        pre_heat_reference_sensor:
+          name: "🌡️ Referenz-Temperatursensor (opt)"
+          description: |
+            Optionaler Temperatursensor zur "Sinnvoll-Prüfung" — typischerweise der
+            Wohnzimmer- oder Master-Sensor.
+
+            Wenn gesetzt: Pre-Heat-Push wird NUR gesendet wenn die Referenz-Temp
+            unter (Komfort-Temp − Hysterese) liegt. Ist es schon warm genug,
+            passiert gar nichts (kein Push, kein Auto-Start).
+
+            Leer lassen = keine Sinnvoll-Prüfung (Push wird immer gesendet).
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        pre_heat_comfort_temp:
+          name: "🎯 Komfort-Zieltemperatur (°C)"
+          description: |
+            Zieltemperatur der Wohnung (typisch: Komfort-Wert der Heizungssteuerung).
+            Wird nur verwendet wenn Referenz-Sensor gesetzt ist.
+          default: 21.0
+          selector:
+            number:
+              min: 15
+              max: 26
+              step: 0.5
+              unit_of_measurement: "°C"
+        pre_heat_hysteresis:
+          name: "↕️ Pre-Heat Hysterese (°C)"
+          description: |
+            Wieviel darf die Referenz-Temp UNTER der Komfort-Temp liegen, damit Pre-Heat
+            noch sinnvoll ist? Bsp: Komfort 21°C, Hysterese 1°C → Pre-Heat nur wenn
+            Referenz-Sensor < 20°C.
+          default: 1.0
+          selector:
+            number:
+              min: 0.0
+              max: 5.0
+              step: 0.5
+              unit_of_measurement: "°C"
+    section_notifications:
+      name: "🔔 Benachrichtigungen"
+      description: |
+        Optionale Info-Pushs beim Umschalten des Away-Helpers.
+      collapsed: true
+      input:
+        quiet_schedule:
+          name: "🌙 Ruhezeit-Zeitplan"
+          description: |
+            Optionaler Zeitplan (schedule-Helfer) für Ruhezeiten.
+            Wenn aktiv (on), werden alle Benachrichtigungen unterdrückt.
+            Leer lassen = keine Ruhezeit-Blockierung.
+          default: ""
+          selector:
+            entity:
+              domain: schedule
+        notifications_enabled:
+          name: "🔘 Benachrichtigungen aktiv"
+          description: |
+            Master-Schalter für Info-Benachrichtigungen.
+          default: false
+          selector:
+            boolean:
+
+        notify_info:
+          name: "🔔 Info-Updates senden"
+          description: |
+            Sendet Statusmeldungen bei Away EIN/AUS.
+          default: false
+          selector:
+            boolean:
+
+        notify_entities:
+          name: "📨 Empfänger (Geräte)"
+          description: |
+            Geräte für Push-Benachrichtigungen (Companion App).
+            Einfach das gewünschte iPhone/Android-Gerät auswählen.
+
+            ⚠️ Der Gerätename muss mit dem in der Companion App registrierten Namen übereinstimmen.
+            Den tatsächlichen Service-Namen prüfen: Entwicklerwerkzeuge → Aktionen → suche "notify.mobile_app_"
+          default: []
+          selector:
+            device:
+              multiple: true
+              integration: mobile_app
+
+        summer_mode_boolean:
+          name: "❄️ Sommermodus-Schalter (opt)"
+          description: |
+            Gemeinsamer Saison-Schalter (input_boolean), gesetzt von der
+            Heizungssteuerung. Wenn AN: keine Away-/Pre-Heat-Benachrichtigungen
+            und kein Vorheizen (wäre wirkungslos). Der Away-Helper wird weiterhin
+            normal gesetzt. Leer = keine Sommermodus-Berücksichtigung.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: !input proximity_entity
+
+  - platform: state
+    entity_id: !input person_entity
+
+  - platform: time_pattern
+    minutes: "/5"
+
+  - platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: "GEOFENCING_PRE_HEAT_CONFIRM"
+    id: pre_heat_confirm
+
+condition: []
+
+action:
+  - variables:
+      inputs:
+        proximity_entity: !input proximity_entity
+        direction_entity: !input direction_entity
+        person_entity: !input person_entity
+        preheat_radius: !input preheat_radius
+        short_absence_timeout: !input short_absence_timeout
+        away_mode_boolean: !input away_mode_boolean
+        pre_heat_mode: !input pre_heat_mode
+        pre_heat_helpers: !input pre_heat_helpers
+        pre_heat_radius: !input pre_heat_radius
+        pre_heat_reference_sensor: !input pre_heat_reference_sensor
+        pre_heat_comfort_temp: !input pre_heat_comfort_temp
+        pre_heat_hysteresis: !input pre_heat_hysteresis
+        notifications_enabled: !input notifications_enabled
+        notify_info: !input notify_info
+        notify_entities: !input notify_entities
+        quiet_schedule: !input quiet_schedule
+        summer_mode_boolean: !input summer_mode_boolean
+
+      away_mode_helper_set: "{{ (inputs.away_mode_boolean | list | length) > 0 }}"
+
+      # Sommermodus: zentraler Saison-Schalter (z. B. von der Heizungssteuerung gesetzt).
+      summer_mode_active: >
+        {% set b = inputs.summer_mode_boolean | default('') | string | trim %}
+        {{ (b not in ['', 'sensor.none', 'none', 'None']) and is_state(b, 'on') }}
+
+      proximity_valid: >
+        {{ inputs.proximity_entity != '' and
+           states(inputs.proximity_entity) not in ['unknown', 'unavailable', 'none', ''] }}
+
+      distance_km: >
+        {% if proximity_valid %}
+          {% set dist_raw = states(inputs.proximity_entity) | float(0) %}
+          {% set unit = (state_attr(inputs.proximity_entity, 'unit_of_measurement') or 'km') | lower %}
+          {% if unit in ['m', 'meter', 'meters', 'metre', 'metres'] %}
+            {{ dist_raw / 1000 }}
+          {% else %}
+            {{ dist_raw }}
+          {% endif %}
+        {% else %}
+          0
+        {% endif %}
+
+      person_entity_valid: >
+        {% set p = inputs.person_entity %}
+        {% if p is iterable and p is not string %}
+          {{ (p | list | length) > 0 }}
+        {% elif p is string %}
+          {{ (p | trim) != '' }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
+      anyone_home: >
+        {% if not (person_entity_valid | bool(false)) %}
+          {{ true }}
+        {% else %}
+          {% set ns = namespace(home=false) %}
+          {% set p_list = inputs.person_entity if (inputs.person_entity is iterable and inputs.person_entity is not string) else [inputs.person_entity] %}
+          {% for p in p_list %}
+            {% if p | string != '' and is_state(p | string, 'home') %}
+              {% set ns.home = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.home }}
+        {% endif %}
+
+      minutes_since_left: >
+        {% if not (person_entity_valid | bool(false)) or (anyone_home | bool(false)) %}
+          {{ 0 }}
+        {% else %}
+          {% set now_ts = as_timestamp(now()) | float(0) %}
+          {% set ns = namespace(latest=0) %}
+          {% set p_list = inputs.person_entity if (inputs.person_entity is iterable and inputs.person_entity is not string) else [inputs.person_entity] %}
+          {% for p in p_list %}
+            {% set p_str = p | string %}
+            {% if p_str != '' and states[p_str] is defined %}
+              {% set p_state = states(p_str) | string | lower %}
+              {% if p_state != 'home' %}
+                {# Use the LATEST departure timestamp: "how long since ALL persons left?"
+                   is determined by when the last person left home. #}
+                {% set leave_ts = as_timestamp(states[p_str].last_changed, 0) | float(0) %}
+                {% if leave_ts > ns.latest %}
+                  {% set ns.latest = leave_ts %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ((now_ts - ns.latest) / 60) | float(0) if ns.latest > 0 else 0 }}
+        {% endif %}
+
+      dir_of_travel: >
+        {% set d_id = (inputs.direction_entity | default('', true)) | string | trim %}
+        {% if d_id != '' and states[d_id] is defined and states(d_id) not in ['unknown', 'unavailable', 'none', ''] %}
+          {{ states(d_id) | string | lower }}
+        {% elif proximity_valid | bool(false) %}
+          {% set p_id = inputs.proximity_entity | string %}
+          {{ (state_attr(p_id, 'dir_of_travel') | default('unknown', true)) | string | lower }}
+        {% else %}
+          {{ 'unknown' }}
+        {% endif %}
+
+      away_mode_entity_on: >
+        {% if not (away_mode_helper_set | bool(false)) %}
+          {{ false }}
+        {% else %}
+          {% set ns = namespace(active=false) %}
+          {% set b_list = inputs.away_mode_boolean if (inputs.away_mode_boolean is iterable and inputs.away_mode_boolean is not string) else [inputs.away_mode_boolean] %}
+          {% for ent in b_list %}
+            {% if ent | string != '' and is_state(ent | string, 'on') %}
+              {% set ns.active = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.active }}
+        {% endif %}
+
+      should_be_away: >
+        {% if not (away_mode_helper_set | bool(false)) %}
+          {{ false }}
+        {% else %}
+          {% set timeout_min = inputs.short_absence_timeout | float(20) %}
+          {% set short_absence_rule = (not (anyone_home | bool(false))) and ((minutes_since_left | float(0)) >= timeout_min) %}
+          {% set far_away = false %}
+          {% if proximity_valid | bool(false) %}
+            {% set dist = distance_km | float(0) %}
+            {% set base_radius = inputs.preheat_radius | float(5) %}
+            {% set hysteresis_km = [base_radius * 0.1, 0.5] | max %}
+            {% if away_mode_entity_on | bool(false) %}
+              {% set far_away = dist >= (base_radius - hysteresis_km) %}
+            {% else %}
+              {% set far_away = dist >= (base_radius + hysteresis_km) %}
+            {% endif %}
+          {% endif %}
+          {{ far_away or short_absence_rule }}
+        {% endif %}
+
+      quiet_active: >
+        {% if inputs.quiet_schedule | default('') | string | trim not in ['', 'none', 'None'] %}
+          {{ is_state(inputs.quiet_schedule, 'on') }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
+      info_notifications_allowed: "{{ inputs.notifications_enabled | bool(false) and inputs.notify_info | bool(false) and not (quiet_active | bool(false)) and not (summer_mode_active | bool(false)) }}"
+
+      notify_services: >
+        {% set ns = namespace(items=[]) %}
+        {% set raw = inputs.notify_entities %}
+        {% if raw is iterable and raw is not string %}
+          {% for dev_id in raw %}
+            {% set dev_id = dev_id | string | trim %}
+            {% if dev_id != '' %}
+              {% set dev_name = device_attr(dev_id, 'name') | default('', true) | string | trim %}
+              {% if dev_name != '' %}
+                {% set svc = 'notify.mobile_app_' ~ (dev_name | slugify | replace('-', '_')) %}
+                {% set ns.items = ns.items + [svc] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.items | unique | list }}
+
+      has_notify_targets: "{{ (inputs.notify_entities | list | length) > 0 }}"
+
+      # ── Pre-Heat Variables ──
+      pre_heat_mode: "{{ inputs.pre_heat_mode | default('off') | string | lower }}"
+      pre_heat_helpers_list: >
+        {% set raw = inputs.pre_heat_helpers | default([]) %}
+        {% if raw is iterable and raw is not string %}
+          {{ raw | reject('in', ['', 'none', 'sensor.none']) | list }}
+        {% else %}
+          {{ [] }}
+        {% endif %}
+      pre_heat_configured: "{{ (pre_heat_mode != 'off') and ((pre_heat_helpers_list | length) > 0) }}"
+      pre_heat_any_already_on: >
+        {% set ns = namespace(any_on=false) %}
+        {% for h in pre_heat_helpers_list %}
+          {% if is_state(h, 'on') %}
+            {% set ns.any_on = true %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.any_on }}
+      heading_home: >
+        {% if not (pre_heat_configured | bool(false)) or not (proximity_valid | bool(false)) %}
+          {{ false }}
+        {% else %}
+          {% set dist = distance_km | float(0) %}
+          {% set ph_radius = inputs.pre_heat_radius | float(3) %}
+          {% set dir = dir_of_travel | string | lower %}
+          {{ dir == 'towards' and dist <= ph_radius and dist > 0 }}
+        {% endif %}
+
+      # True wenn Pre-Heat Sinn macht (Referenz-Temp unter Komfort-Hysterese-Schwelle).
+      # Wenn kein Referenz-Sensor konfiguriert ODER nicht erreichbar → immer true
+      # (backward-compatible: Verhalten wie vor dem Feature).
+      pre_heat_useful: >
+        {% set ref = inputs.pre_heat_reference_sensor | string %}
+        {% if ref in ['', 'sensor.none', 'none'] %}
+          {{ true }}
+        {% else %}
+          {% set st = states(ref) %}
+          {% if st in ['unknown', 'unavailable', 'none', ''] %}
+            {{ true }}
+          {% else %}
+            {% set current = st | float(99) %}
+            {% set comfort = inputs.pre_heat_comfort_temp | float(21.0) %}
+            {% set hyst = inputs.pre_heat_hysteresis | float(1.0) %}
+            {{ current < (comfort - hyst) }}
+          {% endif %}
+        {% endif %}
+
+  # ── Pre-Heat Confirm: User tapped "Vorheizen ✅" on notification ──────────
+  # Only fires in mode 'confirm'. User opt-in; helpers only turn on here.
+  # Also: clears the pending Confirm notification on ALL devices and shows
+  # who triggered Pre-Heat in the confirmation message.
+  - if:
+      - "{{ trigger.id | default('') == 'pre_heat_confirm' }}"
+    then:
+      # 1. Helper einschalten → Pre-Heat startet
+      - repeat:
+          for_each: "{{ pre_heat_helpers_list }}"
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: "{{ repeat.item }}"
+              continue_on_error: true
+      # 2. Actionable Notification auf ALLEN Geräten explizit löschen
+      # (das Ersetzungs-Notification unten erledigt das implizit über Tag,
+      # explizites clear ist belt-and-suspenders falls Tag-Replacement versagt).
+      - if: "{{ has_notify_targets }}"
+        then:
+          - repeat:
+              for_each: "{{ notify_services }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: geofencing_pre_heat
+                  continue_on_error: true
+      # 3. Bestätigungs-Push an alle Geräte mit Namen des Bestätigenden
+      - if: "{{ has_notify_targets }}"
+        then:
+          - repeat:
+              for_each: "{{ notify_services }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "🔥 Vorheizen gestartet"
+                    message: >
+                      {% set dev_id = trigger.event.data.device_id | default('') %}
+                      {% set who = device_attr(dev_id, 'name_by_user') or device_attr(dev_id, 'name') or 'Jemand' %}
+                      {{ pre_heat_helpers_list | length }} Räume werden vorgeheizt (bestätigt durch {{ who }}).
+                    data:
+                      tag: geofencing_pre_heat
+                      push:
+                        sticky: true
+                  continue_on_error: true
+      - stop: "Pre-Heat durch User bestätigt"
+
+  # ── Away aktivieren ────────────────────────────────────────────────────────
+  - if: "{{ (should_be_away | bool(false)) and not (away_mode_entity_on | bool(false)) }}"
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: !input away_mode_boolean
+        continue_on_error: true
+
+      - if: "{{ info_notifications_allowed and has_notify_targets }}"
+        then:
+          - repeat:
+              for_each: "{{ notify_services }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "🌍 Away-Mode aktiv"
+                    message: "Alle Personen abwesend ({{ distance_km | float(0) | round(1) }} km, seit {{ minutes_since_left | float(0) | round(0) | int }} min)."
+                    data:
+                      tag: geofencing_away
+                      push:
+                        sticky: true
+                  continue_on_error: true
+
+  # ── Away deaktivieren ──────────────────────────────────────────────────────
+  - if: "{{ not (should_be_away | bool(false)) and (away_mode_entity_on | bool(false)) }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: !input away_mode_boolean
+        continue_on_error: true
+
+      - if: "{{ info_notifications_allowed and has_notify_targets }}"
+        then:
+          - repeat:
+              for_each: "{{ notify_services }}"
+              sequence:
+                - action: "{{ repeat.item | trim }}"
+                  data:
+                    title: "🏠 Willkommen Zuhause"
+                    message: "Away-Mode deaktiviert."
+                    data:
+                      tag: geofencing_away
+                      push:
+                        sticky: true
+                  continue_on_error: true
+
+  # ── Pre-Heat: Vorheizen bei Heimweg ──────────────────────────────────────
+  # Triggers only when: heading home detected, pre-heat configured, helpers not already on,
+  # AND pre-heat is actually useful (reference temp below comfort − hysteresis).
+  - if:
+      - "{{ (heading_home | bool(false)) and (pre_heat_configured | bool(false)) and not (pre_heat_any_already_on | bool(false)) and (pre_heat_useful | bool(false)) and not (summer_mode_active | bool(false)) }}"
+    then:
+      - choose:
+          # ── Modus CONFIRM (empfohlen): Nur auf User-Bestätigung vorheizen ──
+          # Keine automatische Aktivierung. Nur Push mit "Vorheizen ✅"-Button.
+          # Helfer werden NUR in der pre_heat_confirm-Branch oben umgelegt.
+          - conditions:
+              - "{{ pre_heat_mode == 'confirm' }}"
+            sequence:
+              - if: "{{ has_notify_targets }}"
+                then:
+                  - repeat:
+                      for_each: "{{ notify_services }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "🏠 Heimweg erkannt"
+                            message: "{{ distance_km | float(0) | round(1) }} km entfernt. Soll vorgeheizt werden?"
+                            data:
+                              tag: geofencing_pre_heat
+                              push:
+                                sticky: true
+                              actions:
+                                - action: "GEOFENCING_PRE_HEAT_CONFIRM"
+                                  title: "Vorheizen ✅"
+                          continue_on_error: true
+              # Nichts weiter tun — Pre-Heat startet nur bei Button-Tap (pre_heat_confirm Trigger).
+
+          # ── Modus ON: Automatisch vorheizen ──
+          - conditions:
+              - "{{ pre_heat_mode == 'on' }}"
+            sequence:
+              - repeat:
+                  for_each: "{{ pre_heat_helpers_list }}"
+                  sequence:
+                    - action: input_boolean.turn_on
+                      target:
+                        entity_id: "{{ repeat.item }}"
+                      continue_on_error: true
+              - if: "{{ has_notify_targets }}"
+                then:
+                  - repeat:
+                      for_each: "{{ notify_services }}"
+                      sequence:
+                        - action: "{{ repeat.item | trim }}"
+                          data:
+                            title: "🔥 Vorheizen gestartet"
+                            message: "Heimweg erkannt ({{ distance_km | float(0) | round(1) }} km) — {{ pre_heat_helpers_list | length }} Räume werden vorgeheizt."
+                            data:
+                              tag: geofencing_pre_heat
+                              push:
+                                sticky: true
+                          continue_on_error: true
+

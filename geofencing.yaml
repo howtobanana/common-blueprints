@@ -429,7 +429,8 @@ action:
               {% set far_away = dist >= (base_radius + hysteresis_km) %}
             {% endif %}
           {% endif %}
-          {{ far_away or short_absence_rule }}
+          {# Ist irgendeine Person daheim (auch Besuch), nie abwesend – auch wenn der Entfernungssensor weit weg meldet #}
+          {{ (far_away and not (anyone_home | bool(false))) or short_absence_rule }}
         {% endif %}
 
       quiet_active: >

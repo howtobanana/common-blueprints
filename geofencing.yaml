@@ -20,6 +20,7 @@ blueprint:
     **Version:** 1.0 | **Autor:** Fabian Brandl
 
   domain: automation
+  source_url: https://github.com/howtobanana/common-blueprints/blob/main/geofencing.yaml
   author: "Fabian Brandl"
 
   input:

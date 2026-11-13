@@ -363,15 +363,19 @@ action:
           {{ ns.home }}
         {% endif %}
 
-      # Telefon meldet sich nicht mehr (veraltete Position, unknown/unavailable) = unklar, nie abwesend (HA-4)
+      # Im Zweifel daheim – lieber zu viel heizen (HA-4): Wer nicht daheim ist, zählt als unklar und verhindert
+      # Abwesend, wenn sein Telefon unknown/unavailable ist, seit 12 h (bzw. Timeout) nichts gemeldet hat oder
+      # seit dem Start dieser Automation (HA-Neustart stellt alte Positionen als frisch wieder her) still ist.
       anyone_unreachable: >
         {% set ns = namespace(stale=false) %}
         {% set stale_s = ([inputs.short_absence_timeout | float(20), 720] | max) * 60 %}
+        {% set started = as_timestamp(this.last_changed, 0) if this is defined and this else 0 %}
         {% set p_list = inputs.person_entity if (inputs.person_entity is iterable and inputs.person_entity is not string) else [inputs.person_entity] %}
         {% for p in p_list %}
           {% set st = states[p | string] if (p | string) != '' else none %}
           {% if st is not none and st.state != 'home' %}
-            {% if st.state in ['unknown', 'unavailable'] or (as_timestamp(now()) - as_timestamp(st.last_reported, 0)) > stale_s %}
+            {% set seen = as_timestamp(st.last_reported, 0) %}
+            {% if st.state in ['unknown', 'unavailable'] or (as_timestamp(now()) - seen) >= stale_s or seen <= started %}
               {% set ns.stale = true %}
             {% endif %}
           {% endif %}

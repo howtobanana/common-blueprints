@@ -363,6 +363,21 @@ action:
           {{ ns.home }}
         {% endif %}
 
+      # Telefon meldet sich nicht mehr (veraltete Position, unknown/unavailable) = unklar, nie abwesend (HA-4)
+      anyone_unreachable: >
+        {% set ns = namespace(stale=false) %}
+        {% set stale_s = ([inputs.short_absence_timeout | float(20), 720] | max) * 60 %}
+        {% set p_list = inputs.person_entity if (inputs.person_entity is iterable and inputs.person_entity is not string) else [inputs.person_entity] %}
+        {% for p in p_list %}
+          {% set st = states[p | string] if (p | string) != '' else none %}
+          {% if st is not none and st.state != 'home' %}
+            {% if st.state in ['unknown', 'unavailable'] or (as_timestamp(now()) - as_timestamp(st.last_reported, 0)) > stale_s %}
+              {% set ns.stale = true %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.stale }}
+
       minutes_since_left: >
         {% if not (person_entity_valid | bool(false)) or (anyone_home | bool(false)) %}
           {{ 0 }}
@@ -417,7 +432,8 @@ action:
           {{ false }}
         {% else %}
           {% set timeout_min = inputs.short_absence_timeout | float(20) %}
-          {% set short_absence_rule = (not (anyone_home | bool(false))) and ((minutes_since_left | float(0)) >= timeout_min) %}
+          {% set nobody_maybe_home = not (anyone_home | bool(false)) and not (anyone_unreachable | bool(false)) %}
+          {% set short_absence_rule = nobody_maybe_home and ((minutes_since_left | float(0)) >= timeout_min) %}
           {% set far_away = false %}
           {% if proximity_valid | bool(false) %}
             {% set dist = distance_km | float(0) %}
@@ -429,8 +445,8 @@ action:
               {% set far_away = dist >= (base_radius + hysteresis_km) %}
             {% endif %}
           {% endif %}
-          {# Ist irgendeine Person daheim (auch Besuch), nie abwesend – auch wenn der Entfernungssensor weit weg meldet #}
-          {{ (far_away and not (anyone_home | bool(false))) or short_absence_rule }}
+          {# Ist irgendeine Person daheim (auch Besuch) oder ihr Telefon stumm, nie abwesend – auch wenn der Entfernungssensor weit weg meldet #}
+          {{ (far_away and nobody_maybe_home) or short_absence_rule }}
         {% endif %}
 
       quiet_active: >
